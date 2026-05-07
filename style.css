@@ -1,0 +1,306 @@
+:root {
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --border: #e3e5ea;
+  --text: #1f2937;
+  --text-soft: #6b7280;
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --primary-soft: #eff3ff;
+  --accent: #047857;
+  --warn: #b45309;
+  --danger: #b91c1c;
+  --table-stripe: #f9fafb;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.05);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* Header */
+.app-header {
+  background: linear-gradient(135deg, #1e3a8a 0%, #1d4ed8 100%);
+  color: #fff;
+  padding: 28px 0 24px;
+  margin-bottom: 24px;
+}
+.app-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.subtitle {
+  margin: 6px 0 0;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+.tab-btn {
+  background: transparent;
+  border: none;
+  padding: 12px 20px;
+  font-size: 15px;
+  color: var(--text-soft);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Card */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.hint {
+  color: var(--text-soft);
+  font-size: 13px;
+  margin: 0 0 18px;
+}
+
+/* Upload */
+.upload-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.upload-label {
+  display: block;
+  border: 1.5px dashed var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: #fafbfc;
+}
+.upload-label:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.label-text {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.upload-label input[type=file] {
+  display: none;
+}
+.file-name {
+  display: block;
+  font-size: 12px;
+  color: var(--text-soft);
+  word-break: break-all;
+}
+.upload-label.has-file {
+  border-style: solid;
+  border-color: var(--accent);
+  background: #ecfdf5;
+}
+.upload-label.has-file .file-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Buttons */
+.action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.btn-primary, .btn-secondary {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  border: 1px solid transparent;
+}
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+.btn-secondary {
+  background: #fff;
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.btn-primary:disabled, .btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.error-msg {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 12px 0 0;
+  min-height: 0;
+}
+.error-msg:empty { display: none; }
+
+/* Result */
+.result-header {
+  border-bottom: 2px solid var(--text);
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.result-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.result-meta {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.result-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 18px 0 8px;
+  padding-left: 8px;
+  border-left: 4px solid var(--primary);
+}
+
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.result-table th, .result-table td {
+  border: 1px solid #d1d5db;
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.result-table thead th {
+  background: #f3f4f6;
+  font-weight: 600;
+  text-align: center;
+}
+.result-table tbody tr:nth-child(even) td {
+  background: var(--table-stripe);
+}
+.result-table td.num, .result-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.result-table td.center, .result-table th.center {
+  text-align: center;
+  white-space: nowrap;
+}
+.result-table tr.subtotal td {
+  background: #fef3c7 !important;
+  font-weight: 600;
+}
+.result-table tr.grand-total td {
+  background: #dbeafe !important;
+  font-weight: 700;
+  border-top: 2px solid var(--primary);
+}
+
+/* Footer */
+.app-footer {
+  margin-top: 40px;
+  padding: 18px 0;
+  text-align: center;
+  color: var(--text-soft);
+}
+
+/* Print */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm 14mm;
+  }
+  body {
+    background: #fff;
+    font-size: 11pt;
+  }
+  .no-print { display: none !important; }
+  .container { max-width: 100%; padding: 0; }
+  .card.print-area {
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+  }
+  .result-header {
+    border-bottom: 2px solid #000;
+  }
+  .result-table {
+    font-size: 10pt;
+    page-break-inside: auto;
+  }
+  .result-table tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  .result-table thead { display: table-header-group; }
+  .result-table tbody tr:nth-child(even) td {
+    background: #fff;
+  }
+  .result-table tr.subtotal td {
+    background: #f0f0f0 !important;
+  }
+  .result-table tr.grand-total td {
+    background: #e0e0e0 !important;
+  }
+}

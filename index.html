@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>進銷項資料清洗</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header no-print">
+    <div class="container">
+      <h1>進銷項資料清洗</h1>
+      <p class="subtitle">電子發票平台 + 文中系統 進銷項憑證快速整理</p>
+    </div>
+  </header>
+
+  <main class="container">
+    <nav class="tabs no-print">
+      <button class="tab-btn active" data-tab="output">銷項清洗</button>
+      <button class="tab-btn" data-tab="input">進項清洗</button>
+    </nav>
+
+    <!-- 銷項清洗 -->
+    <section id="tab-output" class="tab-panel active">
+      <div class="card no-print">
+        <h2>銷項清洗</h2>
+        <p class="hint">上傳「電子發票平台」下載的銷項發票明細（xlsx）。系統會自動依 <strong>買方統編</strong> 區分電子二聯／電子三聯，二聯發票將以 5% 稅率還原銷售額與稅額。</p>
+        <div class="upload-row">
+          <div class="upload-field">
+            <label class="upload-label">
+              <span class="label-text">銷項發票明細</span>
+              <input type="file" id="output-file" accept=".xlsx,.xls">
+              <span class="file-name" id="output-file-name">尚未選擇檔案</span>
+            </label>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="btn-primary" id="output-clean-btn" disabled>清洗</button>
+          <button class="btn-secondary" id="output-print-btn" disabled>列印</button>
+          <button class="btn-secondary" id="output-download-btn" disabled>下載 Excel</button>
+        </div>
+        <p class="error-msg" id="output-error"></p>
+      </div>
+
+      <div class="card print-area" id="output-result" hidden>
+        <div class="result-header">
+          <h2 class="result-title">電子銷項發票清洗結果</h2>
+          <div class="result-meta" id="output-meta"></div>
+        </div>
+        <table class="result-table" id="output-table"></table>
+      </div>
+    </section>
+
+    <!-- 進項清洗 -->
+    <section id="tab-input" class="tab-panel">
+      <div class="card no-print">
+        <h2>進項清洗</h2>
+        <p class="hint">需要兩個檔案：① 文中系統「進項憑證明細表」（xls/xlsx）作為主資料；② 電子發票平台下載的進項發票明細（xlsx）作為品名來源。系統會以發票號碼比對品名，並依扣抵欄區分可扣抵／不可扣抵。</p>
+        <div class="upload-row">
+          <div class="upload-field">
+            <label class="upload-label">
+              <span class="label-text">① 文中系統 進項憑證明細表</span>
+              <input type="file" id="input-wenzhong" accept=".xlsx,.xls">
+              <span class="file-name" id="input-wenzhong-name">尚未選擇檔案</span>
+            </label>
+          </div>
+          <div class="upload-field">
+            <label class="upload-label">
+              <span class="label-text">② 平台 進項發票明細</span>
+              <input type="file" id="input-platform" accept=".xlsx,.xls">
+              <span class="file-name" id="input-platform-name">尚未選擇檔案</span>
+            </label>
+          </div>
+        </div>
+        <div class="action-row">
+          <button class="btn-primary" id="input-clean-btn" disabled>清洗</button>
+          <button class="btn-secondary" id="input-print-btn" disabled>列印</button>
+          <button class="btn-secondary" id="input-download-btn" disabled>下載 Excel</button>
+        </div>
+        <p class="error-msg" id="input-error"></p>
+      </div>
+
+      <div class="card print-area" id="input-result" hidden>
+        <div class="result-header">
+          <h2 class="result-title">電子進項憑證清洗結果</h2>
+          <div class="result-meta" id="input-meta"></div>
+        </div>
+        <div id="input-tables"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer no-print">
+    <div class="container">
+      <small>本工具於瀏覽器端完成資料處理，不上傳任何檔案。</small>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="cleaner.js"></script>
+</body>
+</html>
