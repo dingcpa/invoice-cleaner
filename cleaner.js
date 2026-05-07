@@ -109,6 +109,80 @@ function inferPeriod(yms) {
 }
 
 // ============================================================
+// 公司名稱／統編 抓取
+// ============================================================
+
+// 從文中系統檔（印刷格式）找「用戶：」列
+function findCompanyFromWenzhong(rows) {
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const idx = row.findIndex(c => c !== null && c !== undefined && /^用戶[:：]/.test(String(c).trim()));
+    if (idx >= 0) {
+      // 同一儲存格 '用戶：陳桓有限公司'?
+      const sameCell = String(row[idx]).replace(/^用戶[:：]\s*/, '').trim();
+      if (sameCell) return sameCell;
+      // 公司名在 idx 之後第一個非空、非「頁/製表」的儲存格
+      for (let j = idx + 1; j < row.length; j++) {
+        const v = toCleanString(row[j]);
+        if (!v) continue;
+        if (/^(頁|製表|第|序號|金額|稅額|日期|發票|送件)/.test(v)) continue;
+        return v;
+      }
+    }
+  }
+  return '';
+}
+
+// 從平台檔的 Invoice 表抓買方/賣方第一筆有效的統編+名稱
+function findCompanyFromPlatform(wb, side /* 'buyer' | 'seller' */) {
+  const ws = wb.Sheets['Invoice'] || wb.Sheets[wb.SheetNames[0]];
+  if (!ws) return null;
+  const rows = sheetToRows(ws);
+  if (!rows.length) return null;
+  const header = rows[0];
+  const idTaxId = header.findIndex(c => c === (side === 'buyer' ? '買方統一編號' : '賣方統一編號'));
+  const idName = header.findIndex(c => c === (side === 'buyer' ? '買方名稱' : '賣方名稱'));
+  if (idTaxId < 0 || idName < 0) return null;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const taxId = toCleanString(row[idTaxId]).replace(/\.0+$/, '').replace(/\D/g, '');
+    const name = toCleanString(row[idName]);
+    if (taxId && name && !/^0+$/.test(taxId)) {
+      return { taxId, name };
+    }
+  }
+  return null;
+}
+
+// 從工作簿/頁首抓統編（8 碼純數字）
+function extractTaxIdFromFile(wb, rows) {
+  // 1) 工作表名稱（如 "60689392_進項憑證明細表..."）
+  if (wb && wb.SheetNames) {
+    for (const sn of wb.SheetNames) {
+      const m = String(sn).match(/(?:^|\D)(\d{8})(?:$|\D)/);
+      if (m) return m[1];
+    }
+  }
+  // 2) 工作簿元資料 Title
+  if (wb && wb.Props && wb.Props.Title) {
+    const m = String(wb.Props.Title).match(/(\d{8})/);
+    if (m) return m[1];
+  }
+  // 3) 前 5 列任意儲存格找 8 碼純數字
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    const row = rows[i] || [];
+    for (const c of row) {
+      const s = toCleanString(c);
+      const m = s.match(/(?:^|\D)(\d{8})(?:$|\D)/);
+      if (m) return m[1];
+    }
+  }
+  return '';
+}
+
+// ============================================================
 // 銷項清洗
 // ============================================================
 
@@ -217,6 +291,9 @@ function cleanOutput(wb) {
     count: twoCount,
   };
 
+  // 公司資訊：銷項取賣方
+  const company = findCompanyFromPlatform(wb, 'seller') || { taxId: '', name: '' };
+
   return {
     rows: [
       { label: '電子二聯', ...two },
@@ -229,6 +306,7 @@ function cleanOutput(wb) {
       count: two.count + three.count,
     },
     period: inferPeriod(dates),
+    company,
     skipped,
   };
 }
@@ -237,8 +315,12 @@ function renderOutputResult(result) {
   const meta = $('output-meta');
   const today = new Date();
   const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
-  const periodPart = result.period ? `申報期別：${result.period}　` : '';
-  meta.textContent = `${periodPart}製表日期：${stamp}　共 ${result.subtotal.count} 筆${result.skipped.length ? `（已略過非開立確認 ${result.skipped.length} 筆）` : ''}`;
+  $('output-period').textContent = result.period || '';
+  const c = result.company || {};
+  $('output-company').innerHTML = c.name
+    ? `${c.name}${c.taxId ? `<span class="tax-id">統一編號 ${c.taxId}</span>` : ''}`
+    : '';
+  meta.textContent = `製表日期：${stamp}　共 ${result.subtotal.count} 筆${result.skipped.length ? `（已略過非開立確認 ${result.skipped.length} 筆）` : ''}`;
 
   const table = $('output-table');
   let html = `
@@ -292,6 +374,10 @@ const STYLE = {
   },
   periodLine: {
     font: { name: '微軟正黑體', sz: 12, bold: true, color: { rgb: 'B91C1C' } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  },
+  companyLine: {
+    font: { name: '微軟正黑體', sz: 12, bold: true, color: { rgb: '1F2937' } },
     alignment: { horizontal: 'left', vertical: 'center' },
   },
   header: {
@@ -380,6 +466,13 @@ function downloadOutputXlsx(result) {
   // 標題
   setCell(ws, r, 0, makeCell('電子銷項發票清洗結果', STYLE.sectionTitle));
   r++;
+  // 公司名稱
+  if (result.company && result.company.name) {
+    const cn = result.company;
+    const txt = `公司名稱：${cn.name}${cn.taxId ? `（統一編號 ${cn.taxId}）` : ''}`;
+    setCell(ws, r, 0, makeCell(txt, STYLE.companyLine));
+    r++;
+  }
   // 申報期別（如有）
   if (result.period) {
     setCell(ws, r, 0, makeCell(`申報期別：${result.period}`, STYLE.periodLine));
@@ -488,6 +581,22 @@ function buildItemNameMap(platformWb) {
   return map;
 }
 
+// 從平台 Invoice 表建立電子發票號碼集合，用於過濾文中系統檔中的紙本發票
+function buildPlatformInvoiceSet(platformWb) {
+  const set = new Set();
+  const ws = platformWb.Sheets['Invoice'] || platformWb.Sheets[platformWb.SheetNames[0]];
+  if (!ws) return set;
+  const rows = sheetToRows(ws);
+  if (!rows.length) return set;
+  const idx = rows[0].findIndex(c => c === '發票號碼');
+  if (idx < 0) return set;
+  for (let i = 1; i < rows.length; i++) {
+    const inv = toCleanString((rows[i] || [])[idx]);
+    if (inv) set.add(inv);
+  }
+  return set;
+}
+
 function cleanInput(wenzhongWb, platformWb) {
   // 主資料：文中系統 進項憑證明細表
   // 1) 優先選 sheet 名含「進項憑證明細表」的 sheet
@@ -539,10 +648,12 @@ function cleanInput(wenzhongWb, platformWb) {
   }
 
   const nameMap = buildItemNameMap(platformWb);
+  const platformInvoiceSet = buildPlatformInvoiceSet(platformWb);
 
   const deductible = []; // 可扣抵
   const nondeductible = []; // 不可扣抵
   let dedSeq = 0, ndSeq = 0;
+  let paperCount = 0; // 排除的紙本/非電子發票筆數
   const dates = [];
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -555,6 +666,13 @@ function cleanInput(wenzhongWb, platformWb) {
 
     const invoiceNo = toCleanString(row[cols.invoiceNo]);
     if (!invoiceNo) continue;
+
+    // 過濾紙本發票：發票號碼不在電子發票平台下載清單中 → 排除
+    // （若平台 Invoice 集合為空，跳過此過濾以策安全）
+    if (platformInvoiceSet.size > 0 && !platformInvoiceSet.has(invoiceNo)) {
+      paperCount++;
+      continue;
+    }
 
     const date = fmtMingguoDate(row[cols.date]);
     const ym = dateToMingguoYM(row[cols.date]);
@@ -585,10 +703,25 @@ function cleanInput(wenzhongWb, platformWb) {
     tax: acc.tax + r.tax,
   }), { amount: 0, tax: 0 });
 
+  // 公司資訊：先從文中檔的「用戶：」列抓，否則從平台檔的買方名稱抓
+  const wzRows = sheetToRows(ws);
+  const wzCompanyName = findCompanyFromWenzhong(wzRows);
+  const platformBuyer = findCompanyFromPlatform(platformWb, 'buyer');
+  let companyName = wzCompanyName;
+  if (!companyName && platformBuyer && platformBuyer.name && platformBuyer.name !== platformBuyer.taxId) {
+    companyName = platformBuyer.name;
+  }
+  const company = {
+    name: companyName,
+    taxId: (platformBuyer && platformBuyer.taxId) || extractTaxIdFromFile(wenzhongWb, wzRows),
+  };
+
   return {
     deductible: { rows: deductible, subtotal: sumOf(deductible) },
     nondeductible: { rows: nondeductible, subtotal: sumOf(nondeductible) },
     period: inferPeriod(dates),
+    company,
+    paperCount,
     missingNames: deductible.concat(nondeductible).filter(r => !r.itemName).length,
   };
 }
@@ -633,8 +766,15 @@ function renderInputResult(result) {
   const today = new Date();
   const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
   const totalCount = result.deductible.rows.length + result.nondeductible.rows.length;
-  const periodPart = result.period ? `申報期別：${result.period}　` : '';
-  meta.textContent = `${periodPart}製表日期：${stamp}　共 ${totalCount} 筆${result.missingNames ? `（其中 ${result.missingNames} 筆查無平台明細品名）` : ''}`;
+  $('input-period').textContent = result.period || '';
+  const c = result.company || {};
+  $('input-company').innerHTML = c.name
+    ? `${c.name}${c.taxId ? `<span class="tax-id">統一編號 ${c.taxId}</span>` : ''}`
+    : '';
+  const notes = [];
+  if (result.paperCount) notes.push(`已排除非電子發票 ${result.paperCount} 筆`);
+  if (result.missingNames) notes.push(`其中 ${result.missingNames} 筆查無平台明細品名`);
+  meta.textContent = `製表日期：${stamp}　共 ${totalCount} 筆${notes.length ? `（${notes.join('；')}）` : ''}`;
 
   const container = $('input-tables');
   container.innerHTML =
@@ -651,14 +791,25 @@ function downloadInputXlsx(result) {
   const rowHeights = [];
   let r = 0;
 
-  // 申報期別（如有）置於最上方
+  // 公司名稱（如有）
+  if (result.company && result.company.name) {
+    const cn = result.company;
+    const txt = `公司名稱：${cn.name}${cn.taxId ? `（統一編號 ${cn.taxId}）` : ''}`;
+    setCell(ws, r, 0, makeCell(txt, STYLE.companyLine));
+    if (!ws['!merges']) ws['!merges'] = [];
+    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    rowHeights[r] = { hpt: 22 };
+    r++;
+  }
+  // 申報期別（如有）
   if (result.period) {
     setCell(ws, r, 0, makeCell(`申報期別：${result.period}`, STYLE.periodLine));
     if (!ws['!merges']) ws['!merges'] = [];
     ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
     rowHeights[r] = { hpt: 22 };
-    r += 2;
+    r++;
   }
+  if (r > 0) r++; // 空一列
 
   function writeSection(title, rows, subtotal) {
     // 區段標題（合併 7 欄）

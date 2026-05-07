@@ -204,9 +204,48 @@ html, body {
   font-size: 18px;
   font-weight: 600;
 }
+.result-company {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.result-company:empty { display: none; }
+.result-company .tax-id {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-soft);
+}
+.result-period {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  padding: 8px 18px;
+  border-radius: 8px;
+  letter-spacing: 1px;
+  box-shadow: 0 2px 6px rgba(185, 28, 28, 0.25);
+  white-space: nowrap;
+}
+.result-period:empty { display: none; }
+.result-period::before {
+  content: '申報期別';
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0;
+}
 .result-meta {
   font-size: 12px;
   color: var(--text-soft);
+  margin-top: 4px;
+  margin-bottom: 12px;
 }
 
 .result-section-title {
@@ -284,6 +323,18 @@ html, body {
   }
   .result-header {
     border-bottom: 2px solid #000;
+  }
+  .result-period {
+    background: #fff !important;
+    color: #b91c1c !important;
+    border: 2px solid #b91c1c;
+    box-shadow: none;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .result-period::before {
+    background: #b91c1c !important;
+    color: #fff !important;
   }
   .result-table {
     font-size: 10pt;
