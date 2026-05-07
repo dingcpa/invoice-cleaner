@@ -78,6 +78,36 @@ function fmtMingguoDate(v) {
   return s;
 }
 
+// 解析任意日期值為民國年月 {y, m}；無法解析回傳 null
+function dateToMingguoYM(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) {
+    return { y: v.getFullYear() - 1911, m: v.getMonth() + 1 };
+  }
+  const s = String(v).trim();
+  // 民國: 0115-03-01 / 115-03-01 / 115/03/01
+  let m = s.match(/^0?(\d{3})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return { y: +m[1], m: +m[2] };
+  // 民國: 1150114 (7碼)
+  m = s.match(/^(\d{3})(\d{2})(\d{2})$/);
+  if (m) return { y: +m[1], m: +m[2] };
+  // 西元: 2026-03-01 / 2026/03/01
+  m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return { y: +m[1] - 1911, m: +m[2] };
+  return null;
+}
+
+// 從一組日期推算營業稅申報期別字串，例 '115年1-2月' 或 '115年3月'
+function inferPeriod(yms) {
+  const valid = yms.filter(Boolean);
+  if (!valid.length) return '';
+  valid.sort((a, b) => a.y === b.y ? a.m - b.m : a.y - b.y);
+  const first = valid[0], last = valid[valid.length - 1];
+  if (first.y === last.y && first.m === last.m) return `${first.y}年${first.m}月`;
+  if (first.y === last.y) return `${first.y}年${first.m}-${last.m}月`;
+  return `${first.y}年${first.m}月 ~ ${last.y}年${last.m}月`;
+}
+
 // ============================================================
 // 銷項清洗
 // ============================================================
@@ -137,6 +167,7 @@ function cleanOutput(wb) {
   let twoTotalSum = 0, twoCount = 0;
   const three = { sales: 0, tax: 0, total: 0, count: 0 };
   const skipped = [];
+  const dates = [];
 
   for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const row = rows[i];
@@ -155,6 +186,11 @@ function cleanOutput(wb) {
     const total = toNumber(row[cols.totalAmount]);
     const rawSales = toNumber(row[cols.salesAmount]);
     const rawTax = toNumber(row[cols.taxAmount]);
+
+    if (cols.invoiceDate >= 0) {
+      const ym = dateToMingguoYM(row[cols.invoiceDate]);
+      if (ym) dates.push(ym);
+    }
 
     // 無統編 = 空字串、純 0（如 '0'、'00000000'）— 視為電子二聯（B2C）
     const isTwoCopy = !buyerTax || /^0+$/.test(buyerTax);
@@ -192,6 +228,7 @@ function cleanOutput(wb) {
       total: two.total + three.total,
       count: two.count + three.count,
     },
+    period: inferPeriod(dates),
     skipped,
   };
 }
@@ -200,7 +237,8 @@ function renderOutputResult(result) {
   const meta = $('output-meta');
   const today = new Date();
   const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
-  meta.textContent = `製表日期：${stamp}　共 ${result.subtotal.count} 筆${result.skipped.length ? `（已略過非開立確認 ${result.skipped.length} 筆）` : ''}`;
+  const periodPart = result.period ? `申報期別：${result.period}　` : '';
+  meta.textContent = `${periodPart}製表日期：${stamp}　共 ${result.subtotal.count} 筆${result.skipped.length ? `（已略過非開立確認 ${result.skipped.length} 筆）` : ''}`;
 
   const table = $('output-table');
   let html = `
@@ -250,6 +288,10 @@ const BORDER_THIN = {
 const STYLE = {
   sectionTitle: {
     font: { name: '微軟正黑體', sz: 14, bold: true, color: { rgb: '1E3A8A' } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  },
+  periodLine: {
+    font: { name: '微軟正黑體', sz: 12, bold: true, color: { rgb: 'B91C1C' } },
     alignment: { horizontal: 'left', vertical: 'center' },
   },
   header: {
@@ -337,7 +379,13 @@ function downloadOutputXlsx(result) {
   let r = 0;
   // 標題
   setCell(ws, r, 0, makeCell('電子銷項發票清洗結果', STYLE.sectionTitle));
-  r += 2;
+  r++;
+  // 申報期別（如有）
+  if (result.period) {
+    setCell(ws, r, 0, makeCell(`申報期別：${result.period}`, STYLE.periodLine));
+    r++;
+  }
+  r++;
   // 表頭
   const headers = ['類別', '筆數', '銷售額', '稅額', '合計'];
   headers.forEach((h, c) => setCell(ws, r, c, makeCell(h, STYLE.header)));
@@ -495,6 +543,7 @@ function cleanInput(wenzhongWb, platformWb) {
   const deductible = []; // 可扣抵
   const nondeductible = []; // 不可扣抵
   let dedSeq = 0, ndSeq = 0;
+  const dates = [];
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
@@ -508,6 +557,8 @@ function cleanInput(wenzhongWb, platformWb) {
     if (!invoiceNo) continue;
 
     const date = fmtMingguoDate(row[cols.date]);
+    const ym = dateToMingguoYM(row[cols.date]);
+    if (ym) dates.push(ym);
     const amount = toNumber(row[cols.amount]);
     const tax = toNumber(row[cols.taxAmount]);
     const ded = toCleanString(row[cols.deductible]).toUpperCase();
@@ -537,6 +588,7 @@ function cleanInput(wenzhongWb, platformWb) {
   return {
     deductible: { rows: deductible, subtotal: sumOf(deductible) },
     nondeductible: { rows: nondeductible, subtotal: sumOf(nondeductible) },
+    period: inferPeriod(dates),
     missingNames: deductible.concat(nondeductible).filter(r => !r.itemName).length,
   };
 }
@@ -581,7 +633,8 @@ function renderInputResult(result) {
   const today = new Date();
   const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
   const totalCount = result.deductible.rows.length + result.nondeductible.rows.length;
-  meta.textContent = `製表日期：${stamp}　共 ${totalCount} 筆${result.missingNames ? `（其中 ${result.missingNames} 筆查無平台明細品名）` : ''}`;
+  const periodPart = result.period ? `申報期別：${result.period}　` : '';
+  meta.textContent = `${periodPart}製表日期：${stamp}　共 ${totalCount} 筆${result.missingNames ? `（其中 ${result.missingNames} 筆查無平台明細品名）` : ''}`;
 
   const container = $('input-tables');
   container.innerHTML =
@@ -597,6 +650,15 @@ function downloadInputXlsx(result) {
   const ws = {};
   const rowHeights = [];
   let r = 0;
+
+  // 申報期別（如有）置於最上方
+  if (result.period) {
+    setCell(ws, r, 0, makeCell(`申報期別：${result.period}`, STYLE.periodLine));
+    if (!ws['!merges']) ws['!merges'] = [];
+    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    rowHeights[r] = { hpt: 22 };
+    r += 2;
+  }
 
   function writeSection(title, rows, subtotal) {
     // 區段標題（合併 7 欄）
