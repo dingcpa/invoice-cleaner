@@ -221,14 +221,14 @@ html, body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%);
+  background: linear-gradient(135deg, #1e3a8a 0%, #1d4ed8 100%);
   color: #fff;
   font-size: 18px;
   font-weight: 700;
   padding: 8px 18px;
   border-radius: 8px;
   letter-spacing: 1px;
-  box-shadow: 0 2px 6px rgba(185, 28, 28, 0.25);
+  box-shadow: 0 2px 6px rgba(30, 58, 138, 0.25);
   white-space: nowrap;
 }
 .result-period:empty { display: none; }
@@ -326,14 +326,14 @@ html, body {
   }
   .result-period {
     background: #fff !important;
-    color: #b91c1c !important;
-    border: 2px solid #b91c1c;
+    color: #1e3a8a !important;
+    border: 2px solid #1e3a8a;
     box-shadow: none;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
   .result-period::before {
-    background: #b91c1c !important;
+    background: #1e3a8a !important;
     color: #fff !important;
   }
   .result-table {

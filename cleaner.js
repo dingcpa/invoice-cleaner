@@ -373,7 +373,7 @@ const STYLE = {
     alignment: { horizontal: 'left', vertical: 'center' },
   },
   periodLine: {
-    font: { name: '微軟正黑體', sz: 12, bold: true, color: { rgb: 'B91C1C' } },
+    font: { name: '微軟正黑體', sz: 12, bold: true, color: { rgb: '1E3A8A' } },
     alignment: { horizontal: 'left', vertical: 'center' },
   },
   companyLine: {
