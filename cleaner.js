@@ -239,18 +239,129 @@ function renderOutputResult(result) {
   $('output-download-btn').disabled = false;
 }
 
-function downloadOutputXlsx(result) {
-  const aoa = [
-    ['電子銷項發票清洗結果'],
-    [],
-    ['類別', '筆數', '銷售額', '稅額', '合計'],
-  ];
-  for (const r of result.rows) {
-    aoa.push([r.label, r.count, r.sales, r.tax, r.total]);
+// ---------- Excel 樣式工具 ----------
+const FONT = { name: '微軟正黑體', sz: 11 };
+const BORDER_THIN = {
+  top: { style: 'thin', color: { rgb: '999999' } },
+  bottom: { style: 'thin', color: { rgb: '999999' } },
+  left: { style: 'thin', color: { rgb: '999999' } },
+  right: { style: 'thin', color: { rgb: '999999' } },
+};
+const STYLE = {
+  sectionTitle: {
+    font: { name: '微軟正黑體', sz: 14, bold: true, color: { rgb: '1E3A8A' } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  },
+  header: {
+    font: { name: '微軟正黑體', sz: 11, bold: true, color: { rgb: '1F2937' } },
+    fill: { patternType: 'solid', fgColor: { rgb: 'E5E7EB' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: BORDER_THIN,
+  },
+  cellText: {
+    font: FONT,
+    alignment: { horizontal: 'left', vertical: 'center', wrapText: false },
+    border: BORDER_THIN,
+  },
+  cellCenter: {
+    font: FONT,
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: BORDER_THIN,
+  },
+  cellNum: {
+    font: FONT,
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border: BORDER_THIN,
+    numFmt: '#,##0',
+  },
+  subtotalLabel: {
+    font: { name: '微軟正黑體', sz: 11, bold: true, color: { rgb: '1F2937' } },
+    fill: { patternType: 'solid', fgColor: { rgb: 'FEF3C7' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: BORDER_THIN,
+  },
+  subtotalNum: {
+    font: { name: '微軟正黑體', sz: 11, bold: true },
+    fill: { patternType: 'solid', fgColor: { rgb: 'FEF3C7' } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border: BORDER_THIN,
+    numFmt: '#,##0',
+  },
+  grandTotalLabel: {
+    font: { name: '微軟正黑體', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { patternType: 'solid', fgColor: { rgb: '1D4ED8' } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: BORDER_THIN,
+  },
+  grandTotalNum: {
+    font: { name: '微軟正黑體', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { patternType: 'solid', fgColor: { rgb: '1D4ED8' } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border: BORDER_THIN,
+    numFmt: '#,##0',
+  },
+};
+
+function makeCell(value, style) {
+  if (value === null || value === undefined || value === '') {
+    return { v: '', t: 's', s: style };
   }
-  aoa.push(['小計', result.subtotal.count, result.subtotal.sales, result.subtotal.tax, result.subtotal.total]);
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  if (typeof value === 'number') {
+    return { v: value, t: 'n', s: style };
+  }
+  return { v: String(value), t: 's', s: style };
+}
+
+function colLetter(n) {
+  // 0-based → 'A','B',...,'Z','AA',...
+  let s = '';
+  n = n + 1;
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function setCell(ws, r, c, cell) {
+  ws[colLetter(c) + (r + 1)] = cell;
+}
+
+function ensureRange(ws, maxR, maxC) {
+  ws['!ref'] = `A1:${colLetter(maxC)}${maxR + 1}`;
+}
+
+function downloadOutputXlsx(result) {
+  const ws = {};
+  let r = 0;
+  // 標題
+  setCell(ws, r, 0, makeCell('電子銷項發票清洗結果', STYLE.sectionTitle));
+  r += 2;
+  // 表頭
+  const headers = ['類別', '筆數', '銷售額', '稅額', '合計'];
+  headers.forEach((h, c) => setCell(ws, r, c, makeCell(h, STYLE.header)));
+  r++;
+  // 資料列
+  for (const row of result.rows) {
+    setCell(ws, r, 0, makeCell(row.label, STYLE.cellCenter));
+    setCell(ws, r, 1, makeCell(row.count, STYLE.cellNum));
+    setCell(ws, r, 2, makeCell(row.sales, STYLE.cellNum));
+    setCell(ws, r, 3, makeCell(row.tax, STYLE.cellNum));
+    setCell(ws, r, 4, makeCell(row.total, STYLE.cellNum));
+    r++;
+  }
+  // 小計
+  setCell(ws, r, 0, makeCell('小計', STYLE.grandTotalLabel));
+  setCell(ws, r, 1, makeCell(result.subtotal.count, STYLE.grandTotalNum));
+  setCell(ws, r, 2, makeCell(result.subtotal.sales, STYLE.grandTotalNum));
+  setCell(ws, r, 3, makeCell(result.subtotal.tax, STYLE.grandTotalNum));
+  setCell(ws, r, 4, makeCell(result.subtotal.total, STYLE.grandTotalNum));
+
+  ensureRange(ws, r, 4);
   ws['!cols'] = [{ wch: 12 }, { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
+  ws['!rows'] = [{ hpt: 22 }];
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '清洗後');
   XLSX.writeFile(wb, '電子銷項清洗_' + Date.now() + '.xlsx');
@@ -483,27 +594,63 @@ function renderInputResult(result) {
 }
 
 function downloadInputXlsx(result) {
-  const aoa = [['電子進項憑證清洗結果']];
-  aoa.push([]);
-  aoa.push(['可扣抵進項']);
-  aoa.push(['序號', '日期', '發票號碼', '品名', '金額', '稅額', '扣抵']);
-  for (const r of result.deductible.rows) {
-    aoa.push([r.seq, r.date, r.invoiceNo, r.itemName, r.amount, r.tax, r.deductible]);
-  }
-  aoa.push([null, null, null, '小計', result.deductible.subtotal.amount, result.deductible.subtotal.tax, null]);
-  aoa.push([]);
-  aoa.push(['不可扣抵進項']);
-  aoa.push(['序號', '日期', '發票號碼', '品名', '金額', '稅額', '扣抵']);
-  for (const r of result.nondeductible.rows) {
-    aoa.push([r.seq, r.date, r.invoiceNo, r.itemName, r.amount, r.tax, r.deductible]);
-  }
-  aoa.push([null, null, null, '小計', result.nondeductible.subtotal.amount, result.nondeductible.subtotal.tax, null]);
+  const ws = {};
+  const rowHeights = [];
+  let r = 0;
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  function writeSection(title, rows, subtotal) {
+    // 區段標題（合併 7 欄）
+    setCell(ws, r, 0, makeCell(title, STYLE.sectionTitle));
+    if (!ws['!merges']) ws['!merges'] = [];
+    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    rowHeights[r] = { hpt: 24 };
+    r++;
+    // 欄標頭
+    const headers = ['序號', '日期', '發票號碼', '品名', '金額', '稅額', '扣抵'];
+    headers.forEach((h, c) => setCell(ws, r, c, makeCell(h, STYLE.header)));
+    rowHeights[r] = { hpt: 22 };
+    r++;
+    // 資料列
+    for (const row of rows) {
+      setCell(ws, r, 0, makeCell(row.seq, STYLE.cellCenter));
+      setCell(ws, r, 1, makeCell(row.date, STYLE.cellCenter));
+      setCell(ws, r, 2, makeCell(row.invoiceNo, STYLE.cellCenter));
+      setCell(ws, r, 3, makeCell(row.itemName, STYLE.cellText));
+      setCell(ws, r, 4, makeCell(row.amount, STYLE.cellNum));
+      setCell(ws, r, 5, makeCell(row.tax, STYLE.cellNum));
+      setCell(ws, r, 6, makeCell(row.deductible, STYLE.cellCenter));
+      r++;
+    }
+    // 小計列：合併前 4 欄為「小計」標籤
+    setCell(ws, r, 0, makeCell('小計', STYLE.subtotalLabel));
+    setCell(ws, r, 1, makeCell('', STYLE.subtotalLabel));
+    setCell(ws, r, 2, makeCell('', STYLE.subtotalLabel));
+    setCell(ws, r, 3, makeCell('', STYLE.subtotalLabel));
+    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 3 } });
+    setCell(ws, r, 4, makeCell(subtotal.amount, STYLE.subtotalNum));
+    setCell(ws, r, 5, makeCell(subtotal.tax, STYLE.subtotalNum));
+    setCell(ws, r, 6, makeCell('', STYLE.subtotalLabel));
+    rowHeights[r] = { hpt: 22 };
+    r++;
+    // 區段間空一列
+    r++;
+  }
+
+  writeSection('可扣抵進項', result.deductible.rows, result.deductible.subtotal);
+  writeSection('不可扣抵進項', result.nondeductible.rows, result.nondeductible.subtotal);
+
+  ensureRange(ws, r - 1, 6);
   ws['!cols'] = [
-    { wch: 6 }, { wch: 11 }, { wch: 13 }, { wch: 35 },
-    { wch: 12 }, { wch: 10 }, { wch: 6 },
+    { wch: 6 },   // 序號
+    { wch: 11 },  // 日期
+    { wch: 14 },  // 發票號碼
+    { wch: 38 },  // 品名
+    { wch: 12 },  // 金額
+    { wch: 10 },  // 稅額
+    { wch: 7 },   // 扣抵
   ];
+  ws['!rows'] = rowHeights;
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '清洗後');
   XLSX.writeFile(wb, '電子進項清洗_' + Date.now() + '.xlsx');
