@@ -281,9 +281,9 @@ function cleanOutput(wb) {
     }
   }
 
-  // 電子二聯彙總：銷售額 = round(總計合計 / 1.05)、稅額 = round(銷售額 × 5%)
+  // 電子二聯彙總：銷售額 = round(總計合計 / 1.05)、稅額 = 合計 − 銷售額（確保兩者相加恰等於合計）
   const twoSales = Math.round(twoTotalSum / 1.05);
-  const twoTax = Math.round(twoSales * 0.05);
+  const twoTax = twoTotalSum - twoSales;
   const two = {
     sales: twoSales,
     tax: twoTax,
