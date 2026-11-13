@@ -102,7 +102,135 @@
     if (m) return m[1] + '/' + String(m[2]).padStart(2, '0') + '/' + String(m[3]).padStart(2, '0');
     m = s.match(/^(\d{3})(\d{2})(\d{2})$/);
     if (m) return m[1] + '/' + m[2] + '/' + m[3];
+    m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (m) return (+m[1] - 1911) + '/' + String(m[2]).padStart(2, '0') + '/' + String(m[3]).padStart(2, '0');
     return s;
+  }
+
+  function isPresent(v) {
+    return v !== null && v !== undefined && v !== '';
+  }
+
+  // ============================================================
+  // 折讓單（銷項／進項共用）
+  // ============================================================
+
+  /**
+   * 把平台折讓明細（一列一品項，表頭金額在同一張折讓單的每一列重複）
+   * 依折讓單號碼彙整成一張張折讓單。
+   * 金額一律取表頭 amount／tax（品項金額帶小數，加總會有 1 元差）。
+   *
+   * 每列支援欄位：allowanceNo, status, invoiceNo（原發票號碼）, itemName,
+   *   itemAmount, itemTax（品項金額／稅額，僅混合課稅別拆分時使用）,
+   *   amount, tax（必填，折讓單表頭 折讓金額(不含稅)／折讓稅額）, allowanceDate
+   */
+  function groupAllowances(items, skipNonConfirmed) {
+    const docs = new Map();
+    const skipped = new Map();
+    (items || []).forEach((it, i) => {
+      if (!it) return;
+      const no = toCleanString(it.allowanceNo) || ('#' + i);
+      const status = toCleanString(it.status);
+      if (skipNonConfirmed && status && status !== '折讓已確認') {
+        skipped.set(no, status);
+        return;
+      }
+      let doc = docs.get(no);
+      if (!doc) {
+        doc = { allowanceNo: no, date: it.allowanceDate, amount: toNumber(it.amount), tax: toNumber(it.tax), items: [] };
+        docs.set(no, doc);
+      }
+      doc.items.push({
+        invoiceNo: toCleanString(it.invoiceNo),
+        itemName: toCleanString(it.itemName),
+        amount: toNumber(it.itemAmount),
+      });
+    });
+    return {
+      docs: Array.from(docs.values()),
+      skipped: Array.from(skipped, ([allowanceNo, status]) => ({ allowanceNo, status })),
+    };
+  }
+
+  // 課稅別字串 → 'taxable' | 'zero' | 'exempt'；混合、特種或無法判斷 → null
+  function categoryOfTaxType(t) {
+    if (!t || /混合|特種/.test(t)) return null;
+    if (/免稅/.test(t)) return 'exempt';
+    if (/零稅/.test(t)) return 'zero';
+    if (/應稅/.test(t)) return 'taxable';
+    return null;
+  }
+
+  /**
+   * 銷項折讓彙總：依原發票課稅別拆 應稅／零稅率／免稅。
+   * 原發票查不到課稅別時（多為前期發票）：有稅額 → 應稅；稅額為 0 → 暫列免稅並列入 unverified。
+   * 同一張折讓單混有不同課稅別時，零稅率／免稅取品項金額（四捨五入），其餘歸應稅。
+   */
+  function summarizeOutputAllowances(docs, taxTypeOf) {
+    const row = { label: '減：退回及折讓', sales: 0, tax: 0, zero: 0, exempt: 0, total: 0, count: 0 };
+    const unverified = [];
+    for (const doc of docs) {
+      const fallback = doc.tax !== 0 ? 'taxable' : 'exempt';
+      let guessed = false;
+      const cats = doc.items.map(it => {
+        const c = categoryOfTaxType(taxTypeOf.get(it.invoiceNo));
+        if (c) return c;
+        guessed = true;
+        return fallback;
+      });
+      if (guessed && fallback === 'exempt') unverified.push(doc.allowanceNo);
+
+      const part = { taxable: 0, zero: 0, exempt: 0 };
+      if (cats.every(c => c === cats[0])) {
+        part[cats[0]] = doc.amount;
+      } else {
+        doc.items.forEach((it, i) => { part[cats[i]] += it.amount; });
+        part.zero = Math.round(part.zero);
+        part.exempt = Math.round(part.exempt);
+      }
+      row.zero += part.zero;
+      row.exempt += part.exempt;
+      row.sales += doc.amount - part.zero - part.exempt;
+      row.tax += doc.tax;
+      row.total += doc.amount + doc.tax;
+      row.count++;
+    }
+    return { row, unverified };
+  }
+
+  /**
+   * 進項折讓：依原發票在憑證明細中的扣抵別分為可扣抵／不可扣抵。
+   * 原發票不在明細中（前期或紙本）→ 預設可扣抵，matched = false。
+   */
+  function buildInputAllowances(docs, deductibleOf) {
+    const deductible = [], nondeductible = [], unmatched = [];
+    for (const doc of docs) {
+      const invNos = Array.from(new Set(doc.items.map(it => it.invoiceNo).filter(Boolean)));
+      const matchedNo = invNos.find(n => deductibleOf.has(n));
+      if (!matchedNo) unmatched.push(doc.allowanceNo);
+      const ded = matchedNo ? deductibleOf.get(matchedNo) : 'Y';
+      const names = doc.items.map(it => it.itemName).filter(Boolean);
+      const record = {
+        date: fmtMingguoDate(doc.date),
+        invoiceNo: invNos.join('、'),
+        itemName: names.length > 1 ? names[0] + ' 等 ' + names.length + ' 項' : (names[0] || ''),
+        amount: doc.amount,
+        tax: doc.tax,
+        deductible: ded,
+        allowanceNo: doc.allowanceNo,
+        matched: !!matchedNo,
+      };
+      const list = ded === 'N' ? nondeductible : deductible;
+      list.push(Object.assign({ seq: list.length + 1 }, record));
+    }
+    return { deductible, nondeductible, unmatched };
+  }
+
+  function sumAmountTax(list) {
+    return list.reduce(
+      (acc, r) => ({ amount: acc.amount + r.amount, tax: acc.tax + r.tax }),
+      { amount: 0, tax: 0 }
+    );
   }
 
   // ============================================================
@@ -119,42 +247,64 @@
    *   - salesAmount (number)       銷售額合計（電子三聯使用）
    *   - taxAmount (number)         營業稅額（電子三聯使用）
    *   - totalAmount (number)       總計（必填，電子二聯反推用）
+   *   - taxType (string?)          課稅別（'應稅'/'零稅率'/'免稅'/'特種稅率'…）
+   *   - zeroRateAmount (number?)   零稅銷售額（有提供時優先於 taxType）
+   *   - exemptAmount (number?)     免稅銷售額（有提供時優先於 taxType）
    *   - invoiceDate (string|Date?) 發票日期（用於推算申報期別）
    *   - sellerTaxId (string?)      自動推測公司資訊用
    *   - sellerName (string?)       自動推測公司資訊用
    * @param {Object} [opts]
-   *   - skipNonConfirmed (boolean = true) 是否略過非「開立已確認」
+   *   - skipNonConfirmed (boolean = true) 是否略過非「開立已確認」／「折讓已確認」
    *   - company ({taxId, name}?) 直接指定公司資訊，覆寫自動推測
+   *   - allowances (Array?) 銷項折讓明細（欄位見 groupAllowances），提供時回傳 allowance
    * @returns {{
-   *   rows: Array<{label, count, sales, tax, total}>,
-   *   subtotal: {count, sales, tax, total},
+   *   rows: Array<{label, count, sales, tax, zero, exempt, total}>,
+   *   subtotal: {count, sales, tax, zero, exempt, total},
+   *   allowance: null | {
+   *     row: {label, count, sales, tax, zero, exempt, total},  // count = 折讓單張數
+   *     skipped: Array<{allowanceNo, status}>,
+   *     unverified: Array<string>   // 稅額為 0、查無原發票課稅別、暫列免稅的折讓單號
+   *   },
    *   period: string,
    *   company: {taxId, name},
-   *   skipped: Array<{invoiceNo, status}>
+   *   skipped: Array<{invoiceNo, status}>,
+   *   special: Array<{invoiceNo, taxType}>
    * }}
+   *   sales = 應稅銷售額（未稅）、zero = 零稅率銷售額、exempt = 免稅銷售額；
+   *   小計對應 401/403「收銀機發票(三聯式)及電子發票」列第 5／6／7／8 欄，
+   *   allowance.row 對應「減：退回及折讓」第 17／18／19／20 欄。
    *
    * 演算法：
    *   - 買方統編去除非數字後若全為 0（含空字串、'0'、'00000000'）→ 電子二聯（B2C）
    *   - 否則 → 電子三聯
-   *   - 電子三聯：直接加總原始 銷售額 / 稅額 / 合計
-   *   - 電子二聯：先加總所有總計，再以 5% 稅率反推
-   *       銷售額 = round(總計合計 / 1.05)
-   *       稅額   = 總計合計 − 銷售額  （確保銷售+稅必等於合計）
+   *   - 每張發票先拆出 零稅率／免稅 金額：
+   *       有 zeroRateAmount / exemptAmount → 直接採用（可處理混合課稅別）
+   *       否則依 taxType 整張歸類（免稅 / 零稅率），其餘為應稅
+   *   - 課稅別含「特種」者不納入，列入 special
+   *   - 電子三聯：應稅銷售額 = 銷售額合計 − 零稅率 − 免稅；稅額直接加總
+   *   - 電子二聯：應稅總計（含稅）= 總計 − 零稅率 − 免稅，加總後以 5% 反推
+   *       銷售額 = round(應稅總計合計 / 1.05)
+   *       稅額   = 應稅總計合計 − 銷售額  （確保銷售+稅必等於應稅總計）
+   *     零稅率與免稅不反推。
    */
   function cleanOutputData(invoices, opts) {
     opts = opts || {};
     const skipNonConfirmed = opts.skipNonConfirmed !== false;
 
-    let twoTotalSum = 0, twoCount = 0;
-    const three = { sales: 0, tax: 0, total: 0, count: 0 };
+    let twoTaxableGross = 0;
+    const two = { zero: 0, exempt: 0, total: 0, count: 0 };
+    const three = { sales: 0, tax: 0, zero: 0, exempt: 0, total: 0, count: 0 };
     const skipped = [];
+    const special = [];
     const dates = [];
     let detectedSeller = null;
+    const taxTypeOf = new Map(); // 發票號碼 → 課稅別（供折讓單查原發票）
 
     for (const inv of (invoices || [])) {
       if (!inv) continue;
       const invoiceNo = toCleanString(inv.invoiceNo);
       if (!invoiceNo) continue;
+      taxTypeOf.set(invoiceNo, toCleanString(inv.taxType));
 
       const status = toCleanString(inv.status);
       if (skipNonConfirmed && status && status !== '開立已確認') {
@@ -180,21 +330,45 @@
         }
       }
 
+      const taxType = toCleanString(inv.taxType);
+      if (/特種/.test(taxType)) {
+        special.push({ invoiceNo, taxType });
+        continue;
+      }
+      const { zero, exempt } = splitNonTaxable({
+        taxType,
+        zeroCol: isPresent(inv.zeroRateAmount) ? toNumber(inv.zeroRateAmount) : null,
+        exemptCol: isPresent(inv.exemptAmount) ? toNumber(inv.exemptAmount) : null,
+        total,
+        tax: rawTax,
+      });
+
       const isTwoCopy = !buyerTax || /^0+$/.test(buyerTax);
       if (isTwoCopy) {
-        twoTotalSum += total;
-        twoCount++;
+        twoTaxableGross += total - zero - exempt;
+        two.zero += zero;
+        two.exempt += exempt;
+        two.total += total;
+        two.count++;
       } else {
-        three.sales += rawSales;
+        three.sales += rawSales - zero - exempt;
         three.tax += rawTax;
+        three.zero += zero;
+        three.exempt += exempt;
         three.total += total;
         three.count++;
       }
     }
 
-    const twoSales = Math.round(twoTotalSum / 1.05);
-    const twoTax = twoTotalSum - twoSales;
-    const two = { sales: twoSales, tax: twoTax, total: twoTotalSum, count: twoCount };
+    two.sales = Math.round(twoTaxableGross / 1.05);
+    two.tax = twoTaxableGross - two.sales;
+
+    let allowance = null;
+    if (opts.allowances) {
+      const g = groupAllowances(opts.allowances, skipNonConfirmed);
+      const s = summarizeOutputAllowances(g.docs, taxTypeOf);
+      allowance = { row: s.row, skipped: g.skipped, unverified: s.unverified };
+    }
 
     return {
       rows: [
@@ -204,13 +378,30 @@
       subtotal: {
         sales: two.sales + three.sales,
         tax: two.tax + three.tax,
+        zero: two.zero + three.zero,
+        exempt: two.exempt + three.exempt,
         total: two.total + three.total,
         count: two.count + three.count,
       },
+      allowance,
       period: inferPeriod(dates),
       company: opts.company || detectedSeller || { taxId: '', name: '' },
       skipped,
+      special,
     };
+  }
+
+  // 將一張發票的金額拆成 零稅率／免稅 兩部分（其餘即為應稅）。
+  // 有 零稅銷售額／免稅銷售額 欄位時直接採用；否則依課稅別整張歸類
+  // （混合課稅別而沒有拆分欄位時無從拆起，整張視為應稅）。
+  function splitNonTaxable(p) {
+    if (p.zeroCol !== null || p.exemptCol !== null) {
+      return { zero: p.zeroCol || 0, exempt: p.exemptCol || 0 };
+    }
+    const c = categoryOfTaxType(p.taxType);
+    if (c === 'exempt') return { zero: 0, exempt: p.total - p.tax };
+    if (c === 'zero') return { zero: p.total - p.tax, exempt: 0 };
+    return { zero: 0, exempt: 0 };
   }
 
   // ============================================================
@@ -233,14 +424,24 @@
    *   - platformItemNames (Map|Object<string, string>?) 發票號碼 → 品名 對應；
    *     若有則優先使用平台明細品名（典型來自平台 Invoice_details 第一筆）
    *   - company ({taxId, name}?) 公司資訊（無自動推測能力，建議呼叫端傳入）
+   *   - allowances (Array?) 進項折讓明細（欄位見 groupAllowances），提供時回傳 allowance
+   *   - skipNonConfirmed (boolean = true) 折讓單是否略過非「折讓已確認」
    * @returns {{
    *   deductible: {rows, subtotal: {amount, tax}},
    *   nondeductible: {rows, subtotal: {amount, tax}},
+   *   allowance: null | {
+   *     deductible: {rows, subtotal},      // 可扣抵進項之退出及折讓 → 401/403 第 40／41 欄
+   *     nondeductible: {rows, subtotal},
+   *     skipped: Array<{allowanceNo, status}>,
+   *     unmatched: Array<string>           // 原發票不在憑證明細中、預設可扣抵的折讓單號
+   *   },
    *   period: string,
    *   company: {taxId, name},
    *   paperCount: number,
    *   missingNames: number
    * }}
+   *   折讓 row：{ seq, date, invoiceNo（原發票號碼）, itemName, amount, tax, deductible,
+   *              allowanceNo, matched }；扣抵別取原發票在 certs 中的扣抵欄。
    */
   function cleanInputData(certs, opts) {
     opts = opts || {};
@@ -252,11 +453,13 @@
     let dedSeq = 0, ndSeq = 0;
     let paperCount = 0;
     const dates = [];
+    const deductibleOf = new Map(); // 發票號碼 → 'Y'/'N'（含紙本，供折讓單查原發票）
 
     for (const cert of (certs || [])) {
       if (!cert) continue;
       const invoiceNo = toCleanString(cert.invoiceNo);
       if (!invoiceNo) continue;
+      deductibleOf.set(invoiceNo, toCleanString(cert.deductible).toUpperCase() === 'N' ? 'N' : 'Y');
 
       // 過濾紙本：發票號碼不在平台集合中 → 排除
       if (platformSet && platformSet.size > 0 && !platformSet.has(invoiceNo)) {
@@ -284,14 +487,22 @@
       }
     }
 
-    const sumOf = list => list.reduce(
-      (acc, r) => ({ amount: acc.amount + r.amount, tax: acc.tax + r.tax }),
-      { amount: 0, tax: 0 }
-    );
+    let allowance = null;
+    if (opts.allowances) {
+      const g = groupAllowances(opts.allowances, opts.skipNonConfirmed !== false);
+      const a = buildInputAllowances(g.docs, deductibleOf);
+      allowance = {
+        deductible: { rows: a.deductible, subtotal: sumAmountTax(a.deductible) },
+        nondeductible: { rows: a.nondeductible, subtotal: sumAmountTax(a.nondeductible) },
+        skipped: g.skipped,
+        unmatched: a.unmatched,
+      };
+    }
 
     return {
-      deductible: { rows: deductible, subtotal: sumOf(deductible) },
-      nondeductible: { rows: nondeductible, subtotal: sumOf(nondeductible) },
+      deductible: { rows: deductible, subtotal: sumAmountTax(deductible) },
+      nondeductible: { rows: nondeductible, subtotal: sumAmountTax(nondeductible) },
+      allowance,
       period: inferPeriod(dates),
       company: opts.company || { taxId: '', name: '' },
       paperCount,
@@ -327,7 +538,7 @@
     dateToMingguoYM,
     inferPeriod,
     fmtMingguoDate,
-    version: '1.0.0',
+    version: '1.2.0',
   };
 
   if (typeof module !== 'undefined' && module.exports) {

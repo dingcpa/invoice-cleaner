@@ -1,4 +1,10 @@
-/* 進銷項資料清洗 — 瀏覽器端清洗邏輯 */
+/* 進銷項資料清洗 — 瀏覽器端：讀檔、欄位對應、畫面與 Excel 輸出
+ *
+ * 清洗邏輯本身在 embed/invoice-cleaner-core.js（window.InvoiceCleaner），
+ * 網站與嵌入版共用同一份；本檔只負責把 xlsx 轉成核心庫的輸入格式、再把結果畫出來。
+ */
+
+const Core = window.InvoiceCleaner;
 
 // ============================================================
 // 工具函式
@@ -43,10 +49,6 @@ function toNumber(v) {
 
 function toCleanString(v) {
   if (v === null || v === undefined) return '';
-  if (typeof v === 'number') {
-    if (Number.isInteger(v)) return String(v);
-    return String(v);
-  }
   return String(v).trim();
 }
 
@@ -55,57 +57,31 @@ function fmtNum(n) {
   return Math.round(n).toLocaleString('en-US');
 }
 
-// 民國年日期格式化：支援 '0115-03-01' / '1150114' / Date 物件
-function fmtMingguoDate(v) {
-  if (!v) return '';
-  if (v instanceof Date) {
-    const y = v.getFullYear() - 1911;
-    const m = String(v.getMonth() + 1).padStart(2, '0');
-    const d = String(v.getDate()).padStart(2, '0');
-    return `${y}/${m}/${d}`;
+function findColumns(headerRow, map) {
+  const result = {};
+  for (const key in map) {
+    const aliases = map[key];
+    let idx = -1;
+    for (const alias of aliases) {
+      idx = headerRow.findIndex(h => h !== null && String(h).trim().replace(/\s+/g, '') === alias.replace(/\s+/g, ''));
+      if (idx >= 0) break;
+    }
+    result[key] = idx;
   }
-  const s = String(v).trim();
-  // 格式: 0115-03-01 或 115-03-01 或 115/03/01
-  let m = s.match(/^0?(\d{3})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (m) {
-    return `${m[1]}/${String(m[2]).padStart(2,'0')}/${String(m[3]).padStart(2,'0')}`;
-  }
-  // 格式: 1150114 (民國年7位純數字)
-  m = s.match(/^(\d{3})(\d{2})(\d{2})$/);
-  if (m) {
-    return `${m[1]}/${m[2]}/${m[3]}`;
-  }
-  return s;
+  return result;
 }
 
-// 解析任意日期值為民國年月 {y, m}；無法解析回傳 null
-function dateToMingguoYM(v) {
-  if (v === null || v === undefined || v === '') return null;
-  if (v instanceof Date) {
-    return { y: v.getFullYear() - 1911, m: v.getMonth() + 1 };
+// 在前 maxScan 列中找含有 marker 儲存格的標頭列
+function findHeaderRow(rows, marker, maxScan = 10) {
+  for (let i = 0; i < Math.min(rows.length, maxScan); i++) {
+    if (rows[i] && rows[i].some(c => c === marker)) return i;
   }
-  const s = String(v).trim();
-  // 民國: 0115-03-01 / 115-03-01 / 115/03/01
-  let m = s.match(/^0?(\d{3})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (m) return { y: +m[1], m: +m[2] };
-  // 民國: 1150114 (7碼)
-  m = s.match(/^(\d{3})(\d{2})(\d{2})$/);
-  if (m) return { y: +m[1], m: +m[2] };
-  // 西元: 2026-03-01 / 2026/03/01
-  m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-  if (m) return { y: +m[1] - 1911, m: +m[2] };
-  return null;
+  return -1;
 }
 
-// 從一組日期推算營業稅申報期別字串，例 '115年1-2月' 或 '115年3月'
-function inferPeriod(yms) {
-  const valid = yms.filter(Boolean);
-  if (!valid.length) return '';
-  valid.sort((a, b) => a.y === b.y ? a.m - b.m : a.y - b.y);
-  const first = valid[0], last = valid[valid.length - 1];
-  if (first.y === last.y && first.m === last.m) return `${first.y}年${first.m}月`;
-  if (first.y === last.y) return `${first.y}年${first.m}-${last.m}月`;
-  return `${first.y}年${first.m}月 ~ ${last.y}年${last.m}月`;
+function todayStamp() {
+  const d = new Date();
+  return `${d.getFullYear() - 1911}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ============================================================
@@ -183,54 +159,73 @@ function extractTaxIdFromFile(wb, rows) {
 }
 
 // ============================================================
+// 折讓明細（銷項／進項共用）
+// ============================================================
+
+const ALLOWANCE_HEADER_MAP = {
+  allowanceNo: ['折讓單號碼'],
+  status: ['折讓單狀態'],
+  category: ['折讓單類別'],
+  invoiceNo: ['發票號碼'],
+  itemName: ['品項名稱', '品名'],
+  itemAmount: ['品項折讓金額(不含稅)', '品項折讓金額'],
+  amount: ['折讓金額(不含稅)', '折讓金額'],
+  tax: ['折讓稅額'],
+  allowanceDate: ['折讓單日期'],
+};
+
+// 讀平台下載的折讓明細（一列一品項）。expected = '銷項' | '進項'，用來擋上傳錯檔。
+function parseAllowanceFile(wb, expected) {
+  const ws = wb.Sheets['allowance'] || wb.Sheets[wb.SheetNames[0]];
+  const rows = ws ? sheetToRows(ws) : [];
+  const h = findHeaderRow(rows, '折讓單號碼');
+  if (h < 0) throw new Error(`找不到「折讓單號碼」標頭欄，請確認是否為平台下載的${expected}折讓明細`);
+  const cols = findColumns(rows[h], ALLOWANCE_HEADER_MAP);
+  const missing = ['amount', 'tax'].filter(k => cols[k] < 0);
+  if (missing.length) {
+    throw new Error('折讓檔缺少必要欄位：' + missing.map(k => ALLOWANCE_HEADER_MAP[k][0]).join(', '));
+  }
+  const items = [];
+  for (let i = h + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || toCleanString(row[cols.allowanceNo]) === '') continue;
+    const item = {};
+    for (const key in cols) if (cols[key] >= 0) item[key] = row[cols[key]];
+    if (item.category && !String(item.category).includes(expected)) {
+      throw new Error(`折讓檔的折讓單類別是「${item.category}」，這裡需要${expected}折讓明細`);
+    }
+    items.push(item);
+  }
+  return items;
+}
+
+// ============================================================
 // 銷項清洗
 // ============================================================
 
 const OUTPUT_HEADER_MAP = {
   invoiceNo: ['發票號碼'],
-  formatCode: ['格式代號'],
   status: ['發票狀態'],
   invoiceDate: ['發票日期'],
   buyerTaxId: ['買方統一編號', '買方統編'],
-  buyerName: ['買方名稱'],
-  sellerTaxId: ['賣方統一編號', '賣方統編'],
-  sellerName: ['賣方名稱'],
   salesAmount: ['銷售額合計'],
   taxAmount: ['營業稅'],
   totalAmount: ['總計'],
+  // 以下為選擇性欄位：有就用來拆 應稅／零稅率／免稅
+  taxType: ['課稅別'],
+  zeroRateAmount: ['零稅銷售額', '零稅率銷售額'],
+  exemptAmount: ['免稅銷售額'],
 };
 
-function findColumns(headerRow, map) {
-  const result = {};
-  for (const key in map) {
-    const aliases = map[key];
-    let idx = -1;
-    for (const alias of aliases) {
-      idx = headerRow.findIndex(h => h !== null && String(h).trim().replace(/\s+/g, '') === alias.replace(/\s+/g, ''));
-      if (idx >= 0) break;
-    }
-    result[key] = idx;
-  }
-  return result;
-}
-
-function cleanOutput(wb) {
+function cleanOutput(wb, allowanceWb) {
   // 嘗試找到 Invoice 工作表（或第一張）
-  let ws = wb.Sheets['Invoice'];
-  if (!ws) ws = wb.Sheets[wb.SheetNames[0]];
+  const ws = wb.Sheets['Invoice'] || wb.Sheets[wb.SheetNames[0]];
   if (!ws) throw new Error('找不到工作表');
 
   const rows = sheetToRows(ws);
   if (rows.length === 0) throw new Error('檔案無資料');
 
-  // 找標頭列
-  let headerRowIdx = -1;
-  for (let i = 0; i < Math.min(rows.length, 10); i++) {
-    if (rows[i] && rows[i].some(c => c === '發票號碼')) {
-      headerRowIdx = i;
-      break;
-    }
-  }
+  const headerRowIdx = findHeaderRow(rows, '發票號碼');
   if (headerRowIdx < 0) throw new Error('找不到「發票號碼」標頭欄，請確認檔案是否為平台下載的銷項發票明細');
 
   const cols = findColumns(rows[headerRowIdx], OUTPUT_HEADER_MAP);
@@ -238,121 +233,85 @@ function cleanOutput(wb) {
   const missing = required.filter(k => cols[k] < 0);
   if (missing.length) throw new Error('缺少必要欄位：' + missing.join(', '));
 
-  let twoTotalSum = 0, twoCount = 0;
-  const three = { sales: 0, tax: 0, total: 0, count: 0 };
-  const skipped = [];
-  const dates = [];
+  const get = (row, key) => (cols[key] >= 0 ? row[cols[key]] : undefined);
+  // 零稅／免稅欄存在就一律給數字（空白視為 0），整份檔案一致走「欄位拆分」
+  const getNum = (row, key) => (cols[key] >= 0 ? toNumber(row[cols[key]]) : undefined);
 
+  const invoices = [];
   for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const row = rows[i];
-    if (!row || row.every(c => c === null || c === '')) continue;
-    const invoiceNo = toCleanString(row[cols.invoiceNo]);
-    if (!invoiceNo) continue;
-
-    const status = cols.status >= 0 ? toCleanString(row[cols.status]) : '';
-    if (status && status !== '開立已確認') {
-      skipped.push({ invoiceNo, status });
-      continue;
-    }
-
-    const buyerTaxRaw = cols.buyerTaxId >= 0 ? toCleanString(row[cols.buyerTaxId]).replace(/\.0+$/, '') : '';
-    const buyerTax = buyerTaxRaw.replace(/\D/g, ''); // 只留數字
-    const total = toNumber(row[cols.totalAmount]);
-    const rawSales = toNumber(row[cols.salesAmount]);
-    const rawTax = toNumber(row[cols.taxAmount]);
-
-    if (cols.invoiceDate >= 0) {
-      const ym = dateToMingguoYM(row[cols.invoiceDate]);
-      if (ym) dates.push(ym);
-    }
-
-    // 無統編 = 空字串、純 0（如 '0'、'00000000'）— 視為電子二聯（B2C）
-    const isTwoCopy = !buyerTax || /^0+$/.test(buyerTax);
-
-    if (isTwoCopy) {
-      // 電子二聯：先把總計累加，最後一次反推
-      twoTotalSum += total;
-      twoCount++;
-    } else {
-      three.sales += rawSales;
-      three.tax += rawTax;
-      three.total += total;
-      three.count++;
-    }
+    if (!row) continue;
+    invoices.push({
+      invoiceNo: row[cols.invoiceNo],
+      status: get(row, 'status'),
+      buyerTaxId: get(row, 'buyerTaxId'),
+      salesAmount: row[cols.salesAmount],
+      taxAmount: row[cols.taxAmount],
+      totalAmount: row[cols.totalAmount],
+      taxType: get(row, 'taxType'),
+      zeroRateAmount: getNum(row, 'zeroRateAmount'),
+      exemptAmount: getNum(row, 'exemptAmount'),
+      invoiceDate: get(row, 'invoiceDate'),
+    });
   }
 
-  // 電子二聯彙總：銷售額 = round(總計合計 / 1.05)、稅額 = 合計 − 銷售額（確保兩者相加恰等於合計）
-  const twoSales = Math.round(twoTotalSum / 1.05);
-  const twoTax = twoTotalSum - twoSales;
-  const two = {
-    sales: twoSales,
-    tax: twoTax,
-    total: twoTotalSum,
-    count: twoCount,
-  };
+  return Core.cleanOutputData(invoices, {
+    // 公司資訊：銷項取賣方
+    company: findCompanyFromPlatform(wb, 'seller') || { taxId: '', name: '' },
+    allowances: allowanceWb ? parseAllowanceFile(allowanceWb, '銷項') : undefined,
+  });
+}
 
-  // 公司資訊：銷項取賣方
-  const company = findCompanyFromPlatform(wb, 'seller') || { taxId: '', name: '' };
+const OUTPUT_COLUMNS = [
+  { key: 'label', title: '類別' },
+  { key: 'count', title: '筆數' },
+  { key: 'sales', title: '應稅銷售額' },
+  { key: 'tax', title: '稅額' },
+  { key: 'zero', title: '零稅率銷售額' },
+  { key: 'exempt', title: '免稅銷售額' },
+  { key: 'total', title: '合計' },
+];
 
-  return {
-    rows: [
-      { label: '電子二聯', ...two },
-      { label: '電子三聯', ...three },
-    ],
-    subtotal: {
-      sales: two.sales + three.sales,
-      tax: two.tax + three.tax,
-      total: two.total + three.total,
-      count: two.count + three.count,
-    },
-    period: inferPeriod(dates),
-    company,
-    skipped,
-  };
+// 結果下方的說明：對應申報書欄位、需人工確認的項目
+function outputFootnotes(result) {
+  const notes = ['小計列對應申報書（401／403）「收銀機發票(三聯式)及電子發票」列：應稅銷售額→第 5 欄、稅額→第 6 欄、零稅率銷售額→第 7 欄、免稅銷售額→第 8 欄。'];
+  const alw = result.allowance;
+  if (alw) {
+    notes.push('「減：退回及折讓」列依序對應第 17、18、19、20 欄（筆數為折讓單張數）；如另有紙本發票的退回及折讓，須合併填報。');
+    if (alw.unverified.length) {
+      notes.push(`※ 折讓單 ${alw.unverified.length} 張稅額為 0、查無原發票課稅別（多為前期發票），暫列免稅，請確認：${alw.unverified.join('、')}`);
+    }
+  }
+  if (result.special.length) notes.push(`※ 特種稅率發票 ${result.special.length} 筆未納入本表，請另行處理。`);
+  return notes;
 }
 
 function renderOutputResult(result) {
-  const meta = $('output-meta');
-  const today = new Date();
-  const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
   $('output-period').textContent = result.period || '';
   const c = result.company || {};
   $('output-company').innerHTML = c.name
     ? `${c.name}${c.taxId ? `<span class="tax-id">統一編號 ${c.taxId}</span>` : ''}`
     : '';
-  meta.textContent = `製表日期：${stamp}　共 ${result.subtotal.count} 筆${result.skipped.length ? `（已略過非開立確認 ${result.skipped.length} 筆）` : ''}`;
+  const alw = result.allowance;
+  const notes = [];
+  if (result.skipped.length) notes.push(`已略過非開立確認 ${result.skipped.length} 筆`);
+  if (result.special.length) notes.push(`特種稅率 ${result.special.length} 筆未納入本表`);
+  if (alw && alw.skipped.length) notes.push(`已略過作廢折讓單 ${alw.skipped.length} 張`);
+  $('output-meta').textContent = `製表日期：${todayStamp()}　共 ${result.subtotal.count} 筆${notes.length ? `（${notes.join('；')}）` : ''}`;
 
-  const table = $('output-table');
-  let html = `
-    <thead>
-      <tr>
-        <th class="center">類別</th>
-        <th class="num">筆數</th>
-        <th class="num">銷售額</th>
-        <th class="num">稅額</th>
-        <th class="num">合計</th>
-      </tr>
-    </thead>
-    <tbody>
-  `;
-  for (const r of result.rows) {
-    html += `<tr>
-      <td class="center">${r.label}</td>
-      <td class="num">${r.count}</td>
-      <td class="num">${fmtNum(r.sales)}</td>
-      <td class="num">${fmtNum(r.tax)}</td>
-      <td class="num">${fmtNum(r.total)}</td>
-    </tr>`;
-  }
-  html += `<tr class="grand-total">
-    <td class="center">小計</td>
-    <td class="num">${result.subtotal.count}</td>
-    <td class="num">${fmtNum(result.subtotal.sales)}</td>
-    <td class="num">${fmtNum(result.subtotal.tax)}</td>
-    <td class="num">${fmtNum(result.subtotal.total)}</td>
-  </tr>`;
+  const cell = (r, col) => col.key === 'label'
+    ? `<td class="center">${r.label}</td>`
+    : `<td class="num">${col.key === 'count' ? r.count : fmtNum(r[col.key])}</td>`;
+  const tr = (r, cls) => `<tr${cls ? ` class="${cls}"` : ''}>${OUTPUT_COLUMNS.map(col => cell(r, col)).join('')}</tr>`;
+
+  let html = `<thead><tr>${OUTPUT_COLUMNS.map(col =>
+    `<th class="${col.key === 'label' ? 'center' : 'num'}">${col.title}</th>`).join('')}</tr></thead><tbody>`;
+  for (const r of result.rows) html += tr(r);
+  html += tr({ label: '小計', ...result.subtotal }, 'grand-total');
+  if (alw) html += tr(alw.row, 'subtotal');
   html += `</tbody>`;
-  table.innerHTML = html;
+  $('output-table').innerHTML = html;
+  $('output-note').textContent = outputFootnotes(result).join('\n');
 
   $('output-result').hidden = false;
   $('output-print-btn').disabled = false;
@@ -428,6 +387,9 @@ const STYLE = {
     border: BORDER_THIN,
     numFmt: '#,##0',
   },
+  footnote: {
+    font: { name: '微軟正黑體', sz: 10, color: { rgb: '4B5563' } },
+  },
 };
 
 function makeCell(value, style) {
@@ -480,27 +442,25 @@ function downloadOutputXlsx(result) {
   }
   r++;
   // 表頭
-  const headers = ['類別', '筆數', '銷售額', '稅額', '合計'];
-  headers.forEach((h, c) => setCell(ws, r, c, makeCell(h, STYLE.header)));
+  const lastCol = OUTPUT_COLUMNS.length - 1;
+  OUTPUT_COLUMNS.forEach((c, i) => setCell(ws, r, i, makeCell(c.title, STYLE.header)));
   r++;
-  // 資料列
-  for (const row of result.rows) {
-    setCell(ws, r, 0, makeCell(row.label, STYLE.cellCenter));
-    setCell(ws, r, 1, makeCell(row.count, STYLE.cellNum));
-    setCell(ws, r, 2, makeCell(row.sales, STYLE.cellNum));
-    setCell(ws, r, 3, makeCell(row.tax, STYLE.cellNum));
-    setCell(ws, r, 4, makeCell(row.total, STYLE.cellNum));
+  const writeRow = (row, labelStyle, numStyle) => {
+    OUTPUT_COLUMNS.forEach((c, i) =>
+      setCell(ws, r, i, makeCell(row[c.key], c.key === 'label' ? labelStyle : numStyle)));
     r++;
+  };
+  for (const row of result.rows) writeRow(row, STYLE.cellCenter, STYLE.cellNum);
+  writeRow({ label: '小計', ...result.subtotal }, STYLE.grandTotalLabel, STYLE.grandTotalNum);
+  if (result.allowance) writeRow(result.allowance.row, STYLE.subtotalLabel, STYLE.subtotalNum);
+  // 備註
+  for (const t of outputFootnotes(result)) {
+    r++;
+    setCell(ws, r, 0, makeCell(t, STYLE.footnote));
   }
-  // 小計
-  setCell(ws, r, 0, makeCell('小計', STYLE.grandTotalLabel));
-  setCell(ws, r, 1, makeCell(result.subtotal.count, STYLE.grandTotalNum));
-  setCell(ws, r, 2, makeCell(result.subtotal.sales, STYLE.grandTotalNum));
-  setCell(ws, r, 3, makeCell(result.subtotal.tax, STYLE.grandTotalNum));
-  setCell(ws, r, 4, makeCell(result.subtotal.total, STYLE.grandTotalNum));
 
-  ensureRange(ws, r, 4);
-  ws['!cols'] = [{ wch: 12 }, { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
+  ensureRange(ws, r, lastCol);
+  ws['!cols'] = [{ wch: 16 }, { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
   ws['!rows'] = [{ hpt: 22 }];
 
   const wb = XLSX.utils.book_new();
@@ -597,7 +557,7 @@ function buildPlatformInvoiceSet(platformWb) {
   return set;
 }
 
-function cleanInput(wenzhongWb, platformWb) {
+function cleanInput(wenzhongWb, platformWb, allowanceWb) {
   // 主資料：文中系統 進項憑證明細表
   // 1) 優先選 sheet 名含「進項憑證明細表」的 sheet
   // 2) 否則掃所有 sheet 找有正確標頭列的
@@ -647,15 +607,8 @@ function cleanInput(wenzhongWb, platformWb) {
     throw new Error('文中系統檔缺少必要欄位：' + missing.map(k => WENZHONG_HEADER_MAP[k][0]).join(', '));
   }
 
-  const nameMap = buildItemNameMap(platformWb);
-  const platformInvoiceSet = buildPlatformInvoiceSet(platformWb);
-
-  const deductible = []; // 可扣抵
-  const nondeductible = []; // 不可扣抵
-  let dedSeq = 0, ndSeq = 0;
-  let paperCount = 0; // 排除的紙本/非電子發票筆數
-  const dates = [];
-
+  const memo = (row, key) => (cols[key] >= 0 ? toCleanString(row[cols[key]]) : '');
+  const certs = [];
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
@@ -663,49 +616,18 @@ function cleanInput(wenzhongWb, platformWb) {
     const noVal = row[cols.no];
     if (noVal === null || noVal === undefined || noVal === '') continue;
     if (typeof noVal === 'string' && !/^\d/.test(noVal.trim())) continue;
-
-    const invoiceNo = toCleanString(row[cols.invoiceNo]);
-    if (!invoiceNo) continue;
-
-    // 過濾紙本發票：發票號碼不在電子發票平台下載清單中 → 排除
-    // （若平台 Invoice 集合為空，跳過此過濾以策安全）
-    if (platformInvoiceSet.size > 0 && !platformInvoiceSet.has(invoiceNo)) {
-      paperCount++;
-      continue;
-    }
-
-    const date = fmtMingguoDate(row[cols.date]);
-    const ym = dateToMingguoYM(row[cols.date]);
-    if (ym) dates.push(ym);
-    const amount = toNumber(row[cols.amount]);
-    const tax = toNumber(row[cols.taxAmount]);
-    const ded = toCleanString(row[cols.deductible]).toUpperCase();
-    let itemName = nameMap.get(invoiceNo) || '';
-    if (!itemName && cols.creditMemo >= 0) itemName = toCleanString(row[cols.creditMemo]);
-    if (!itemName && cols.debitMemo >= 0) itemName = toCleanString(row[cols.debitMemo]);
-
-    const record = {
-      date, invoiceNo, itemName, amount, tax, deductible: ded,
-    };
-
-    if (ded === 'Y') {
-      deductible.push({ seq: ++dedSeq, ...record });
-    } else if (ded === 'N') {
-      nondeductible.push({ seq: ++ndSeq, ...record });
-    } else {
-      // 預設為可扣抵
-      deductible.push({ seq: ++dedSeq, ...record });
-    }
+    certs.push({
+      invoiceNo: row[cols.invoiceNo],
+      date: row[cols.date],
+      amount: row[cols.amount],
+      taxAmount: row[cols.taxAmount],
+      deductible: row[cols.deductible],
+      itemName: memo(row, 'creditMemo') || memo(row, 'debitMemo'), // 平台查無品名時的 fallback
+    });
   }
 
-  const sumOf = list => list.reduce((acc, r) => ({
-    amount: acc.amount + r.amount,
-    tax: acc.tax + r.tax,
-  }), { amount: 0, tax: 0 });
-
   // 公司資訊：先從文中檔的「用戶：」列抓，否則從平台檔的買方名稱抓
-  const wzRows = sheetToRows(ws);
-  const wzCompanyName = findCompanyFromWenzhong(wzRows);
+  const wzCompanyName = findCompanyFromWenzhong(rows);
   const platformBuyer = findCompanyFromPlatform(platformWb, 'buyer');
   let companyName = wzCompanyName;
   if (!companyName && platformBuyer && platformBuyer.name && platformBuyer.name !== platformBuyer.taxId) {
@@ -713,17 +635,45 @@ function cleanInput(wenzhongWb, platformWb) {
   }
   const company = {
     name: companyName,
-    taxId: (platformBuyer && platformBuyer.taxId) || extractTaxIdFromFile(wenzhongWb, wzRows),
+    taxId: (platformBuyer && platformBuyer.taxId) || extractTaxIdFromFile(wenzhongWb, rows),
   };
 
-  return {
-    deductible: { rows: deductible, subtotal: sumOf(deductible) },
-    nondeductible: { rows: nondeductible, subtotal: sumOf(nondeductible) },
-    period: inferPeriod(dates),
+  return Core.cleanInputData(certs, {
+    // 過濾紙本發票：發票號碼不在電子發票平台下載清單中 → 排除
+    platformInvoiceNos: buildPlatformInvoiceSet(platformWb),
+    platformItemNames: buildItemNameMap(platformWb),
     company,
-    paperCount,
-    missingNames: deductible.concat(nondeductible).filter(r => !r.itemName).length,
-  };
+    allowances: allowanceWb ? parseAllowanceFile(allowanceWb, '進項') : undefined,
+  });
+}
+
+// 進項結果要列出的區段：[標題, {rows, subtotal}]
+function inputSections(result) {
+  const list = [['可扣抵進項', result.deductible], ['不可扣抵進項', result.nondeductible]];
+  const alw = result.allowance;
+  if (alw) {
+    list.push(['可扣抵進項之退出及折讓', alw.deductible]);
+    if (alw.nondeductible.rows.length) list.push(['不可扣抵進項之退出及折讓', alw.nondeductible]);
+  }
+  return list;
+}
+
+function inputFootnotes(result) {
+  const alw = result.allowance;
+  if (!alw) return [];
+  const notes = [
+    '「可扣抵進項之退出及折讓」小計對應申報書（401／403）「減：退出、折讓及海關退還溢繳稅款」第 40／41 欄（屬固定資產者為第 42／43 欄）。',
+    '折讓區段的發票號碼為被折讓的原發票號碼，扣抵別依原發票在文中明細中的扣抵欄。',
+  ];
+  if (alw.unmatched.length) {
+    notes.push(`* 原發票不在本期文中明細（前期或紙本發票），扣抵別預設為 Y，請確認（${alw.unmatched.length} 張）。`);
+  }
+  return notes;
+}
+
+// 扣抵欄顯示：查不到原發票的折讓加註 *
+function deductibleLabel(r) {
+  return (r.deductible || '') + (r.matched === false ? '*' : '');
 }
 
 function renderInputSection(title, section) {
@@ -749,7 +699,7 @@ function renderInputSection(title, section) {
       <td>${r.itemName || '<span style="color:#9ca3af">—</span>'}</td>
       <td class="num">${fmtNum(r.amount)}</td>
       <td class="num">${fmtNum(r.tax)}</td>
-      <td class="center">${r.deductible || ''}</td>
+      <td class="center">${deductibleLabel(r)}</td>
     </tr>`;
   }
   html += `<tr class="subtotal">
@@ -762,9 +712,6 @@ function renderInputSection(title, section) {
 }
 
 function renderInputResult(result) {
-  const meta = $('input-meta');
-  const today = new Date();
-  const stamp = `${today.getFullYear() - 1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
   const totalCount = result.deductible.rows.length + result.nondeductible.rows.length;
   $('input-period').textContent = result.period || '';
   const c = result.company || {};
@@ -774,12 +721,17 @@ function renderInputResult(result) {
   const notes = [];
   if (result.paperCount) notes.push(`已排除非電子發票 ${result.paperCount} 筆`);
   if (result.missingNames) notes.push(`其中 ${result.missingNames} 筆查無平台明細品名`);
-  meta.textContent = `製表日期：${stamp}　共 ${totalCount} 筆${notes.length ? `（${notes.join('；')}）` : ''}`;
+  const alw = result.allowance;
+  if (alw) {
+    const n = alw.deductible.rows.length + alw.nondeductible.rows.length;
+    notes.push(`進項折讓 ${n} 張${alw.skipped.length ? `、已略過作廢 ${alw.skipped.length} 張` : ''}`);
+  }
+  $('input-meta').textContent = `製表日期：${todayStamp()}　共 ${totalCount} 筆${notes.length ? `（${notes.join('；')}）` : ''}`;
 
-  const container = $('input-tables');
-  container.innerHTML =
-    renderInputSection('可扣抵進項', result.deductible) +
-    renderInputSection('不可扣抵進項', result.nondeductible);
+  const footnotes = inputFootnotes(result);
+  $('input-tables').innerHTML =
+    inputSections(result).map(([title, section]) => renderInputSection(title, section)).join('') +
+    (footnotes.length ? `<p class="result-note">${footnotes.join('\n')}</p>` : '');
 
   $('input-result').hidden = false;
   $('input-print-btn').disabled = false;
@@ -787,25 +739,24 @@ function renderInputResult(result) {
 }
 
 function downloadInputXlsx(result) {
-  const ws = {};
+  const ws = { '!merges': [] };
   const rowHeights = [];
   let r = 0;
+  const mergeRow = (c0, c1) => ws['!merges'].push({ s: { r, c: c0 }, e: { r, c: c1 } });
 
   // 公司名稱（如有）
   if (result.company && result.company.name) {
     const cn = result.company;
     const txt = `公司名稱：${cn.name}${cn.taxId ? `（統一編號 ${cn.taxId}）` : ''}`;
     setCell(ws, r, 0, makeCell(txt, STYLE.companyLine));
-    if (!ws['!merges']) ws['!merges'] = [];
-    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    mergeRow(0, 6);
     rowHeights[r] = { hpt: 22 };
     r++;
   }
   // 申報期別（如有）
   if (result.period) {
     setCell(ws, r, 0, makeCell(`申報期別：${result.period}`, STYLE.periodLine));
-    if (!ws['!merges']) ws['!merges'] = [];
-    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    mergeRow(0, 6);
     rowHeights[r] = { hpt: 22 };
     r++;
   }
@@ -814,8 +765,7 @@ function downloadInputXlsx(result) {
   function writeSection(title, rows, subtotal) {
     // 區段標題（合併 7 欄）
     setCell(ws, r, 0, makeCell(title, STYLE.sectionTitle));
-    if (!ws['!merges']) ws['!merges'] = [];
-    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 6 } });
+    mergeRow(0, 6);
     rowHeights[r] = { hpt: 24 };
     r++;
     // 欄標頭
@@ -831,7 +781,7 @@ function downloadInputXlsx(result) {
       setCell(ws, r, 3, makeCell(row.itemName, STYLE.cellText));
       setCell(ws, r, 4, makeCell(row.amount, STYLE.cellNum));
       setCell(ws, r, 5, makeCell(row.tax, STYLE.cellNum));
-      setCell(ws, r, 6, makeCell(row.deductible, STYLE.cellCenter));
+      setCell(ws, r, 6, makeCell(deductibleLabel(row), STYLE.cellCenter));
       r++;
     }
     // 小計列：合併前 4 欄為「小計」標籤
@@ -839,7 +789,7 @@ function downloadInputXlsx(result) {
     setCell(ws, r, 1, makeCell('', STYLE.subtotalLabel));
     setCell(ws, r, 2, makeCell('', STYLE.subtotalLabel));
     setCell(ws, r, 3, makeCell('', STYLE.subtotalLabel));
-    ws['!merges'].push({ s: { r, c: 0 }, e: { r, c: 3 } });
+    mergeRow(0, 3);
     setCell(ws, r, 4, makeCell(subtotal.amount, STYLE.subtotalNum));
     setCell(ws, r, 5, makeCell(subtotal.tax, STYLE.subtotalNum));
     setCell(ws, r, 6, makeCell('', STYLE.subtotalLabel));
@@ -849,8 +799,13 @@ function downloadInputXlsx(result) {
     r++;
   }
 
-  writeSection('可扣抵進項', result.deductible.rows, result.deductible.subtotal);
-  writeSection('不可扣抵進項', result.nondeductible.rows, result.nondeductible.subtotal);
+  for (const [title, section] of inputSections(result)) {
+    writeSection(title, section.rows, section.subtotal);
+  }
+  for (const t of inputFootnotes(result)) {
+    setCell(ws, r, 0, makeCell(t, STYLE.footnote));
+    r++;
+  }
 
   ensureRange(ws, r - 1, 6);
   ws['!cols'] = [
@@ -900,18 +855,27 @@ function bindFileInput(inputId, nameId, onChange) {
 
 // 銷項
 let outputResult = null;
+let outputFile = null;
+let outputAlwFile = null;
 bindFileInput('output-file', 'output-file-name', file => {
+  outputFile = file;
   $('output-clean-btn').disabled = !file;
+  $('output-error').textContent = '';
+});
+bindFileInput('output-alw-file', 'output-alw-file-name', file => {
+  outputAlwFile = file;
   $('output-error').textContent = '';
 });
 
 $('output-clean-btn').addEventListener('click', async () => {
-  const file = $('output-file').files[0];
-  if (!file) return;
+  if (!outputFile) return;
   $('output-error').textContent = '';
   try {
-    const wb = await readWorkbook(file);
-    outputResult = cleanOutput(wb);
+    const [wb, alwWb] = await Promise.all([
+      readWorkbook(outputFile),
+      outputAlwFile ? readWorkbook(outputAlwFile) : null,
+    ]);
+    outputResult = cleanOutput(wb, alwWb);
     renderOutputResult(outputResult);
   } catch (err) {
     console.error(err);
@@ -936,6 +900,7 @@ $('output-download-btn').addEventListener('click', () => {
 let inputResult = null;
 let wenzhongFile = null;
 let platformFile = null;
+let inputAlwFile = null;
 
 function updateInputCleanBtn() {
   $('input-clean-btn').disabled = !(wenzhongFile && platformFile);
@@ -951,16 +916,21 @@ bindFileInput('input-platform', 'input-platform-name', file => {
   updateInputCleanBtn();
   $('input-error').textContent = '';
 });
+bindFileInput('input-alw', 'input-alw-name', file => {
+  inputAlwFile = file;
+  $('input-error').textContent = '';
+});
 
 $('input-clean-btn').addEventListener('click', async () => {
   if (!wenzhongFile || !platformFile) return;
   $('input-error').textContent = '';
   try {
-    const [wzWb, pfWb] = await Promise.all([
+    const [wzWb, pfWb, alwWb] = await Promise.all([
       readWorkbook(wenzhongFile),
       readWorkbook(platformFile),
+      inputAlwFile ? readWorkbook(inputAlwFile) : null,
     ]);
-    inputResult = cleanInput(wzWb, pfWb);
+    inputResult = cleanInput(wzWb, pfWb, alwWb);
     renderInputResult(inputResult);
   } catch (err) {
     console.error(err);
