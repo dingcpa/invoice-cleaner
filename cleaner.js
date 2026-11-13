@@ -169,12 +169,14 @@ const ALLOWANCE_HEADER_MAP = {
   invoiceNo: ['發票號碼'],
   itemName: ['品項名稱', '品名'],
   itemAmount: ['品項折讓金額(不含稅)', '品項折讓金額'],
+  itemTax: ['品項折讓稅額', '品項稅額'],
   amount: ['折讓金額(不含稅)', '折讓金額'],
   tax: ['折讓稅額'],
   allowanceDate: ['折讓單日期'],
 };
 
-// 讀平台下載的折讓明細（一列一品項）。expected = '銷項' | '進項'，用來擋上傳錯檔。
+// 讀平台下載的折讓明細（一列一品項）。expected = '銷項' | '進項'：
+// 只取該類別的列（可直接上傳「銷進項折讓 INOUT」合併檔），整份都是另一類別時擋下。
 function parseAllowanceFile(wb, expected) {
   const ws = wb.Sheets['allowance'] || wb.Sheets[wb.SheetNames[0]];
   const rows = ws ? sheetToRows(ws) : [];
@@ -186,15 +188,20 @@ function parseAllowanceFile(wb, expected) {
     throw new Error('折讓檔缺少必要欄位：' + missing.map(k => ALLOWANCE_HEADER_MAP[k][0]).join(', '));
   }
   const items = [];
+  let otherCategory = '';
   for (let i = h + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || toCleanString(row[cols.allowanceNo]) === '') continue;
     const item = {};
     for (const key in cols) if (cols[key] >= 0) item[key] = row[cols[key]];
     if (item.category && !String(item.category).includes(expected)) {
-      throw new Error(`折讓檔的折讓單類別是「${item.category}」，這裡需要${expected}折讓明細`);
+      otherCategory = otherCategory || String(item.category);
+      continue;
     }
     items.push(item);
+  }
+  if (!items.length && otherCategory) {
+    throw new Error(`折讓檔的折讓單類別是「${otherCategory}」，這裡需要${expected}折讓明細`);
   }
   return items;
 }
@@ -277,9 +284,13 @@ function outputFootnotes(result) {
   const notes = ['小計列對應申報書（401／403）「收銀機發票(三聯式)及電子發票」列：應稅銷售額→第 5 欄、稅額→第 6 欄、零稅率銷售額→第 7 欄、免稅銷售額→第 8 欄。'];
   const alw = result.allowance;
   if (alw) {
-    notes.push('「減：退回及折讓」列依序對應第 17、18、19、20 欄（筆數為折讓單張數）；如另有紙本發票的退回及折讓，須合併填報。');
+    notes.push('「減：退回及折讓」列依序對應第 17、18、19、20 欄（筆數為折讓單張數）；各品項依原發票課稅別或品項稅額區分應稅／零稅率／免稅，如另有紙本發票的退回及折讓，須合併填報。');
     if (alw.unverified.length) {
-      notes.push(`※ 折讓單 ${alw.unverified.length} 張稅額為 0、查無原發票課稅別（多為前期發票），暫列免稅，請確認：${alw.unverified.join('、')}`);
+      notes.push(`※ 折讓單 ${alw.unverified.length} 張含稅額為 0 的品項、查無原發票課稅別（多為前期發票），暫列免稅（如為零稅率請改列第 19 欄），請確認：${alw.unverified.join('、')}`);
+    }
+    if (alw.mismatched && alw.mismatched.length) {
+      const list = alw.mismatched.map(m => `${m.allowanceNo}（應稅 ${fmtNum(m.sales)}／稅額 ${fmtNum(m.tax)}）`);
+      notes.push(`※ 折讓單 ${alw.mismatched.length} 張的應稅金額與稅額不符 5%，請人工核對：${list.join('、')}`);
     }
   }
   if (result.special.length) notes.push(`※ 特種稅率發票 ${result.special.length} 筆未納入本表，請另行處理。`);

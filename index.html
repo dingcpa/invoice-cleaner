@@ -24,7 +24,7 @@
     <section id="tab-output" class="tab-panel active">
       <div class="card no-print">
         <h2>銷項清洗</h2>
-        <p class="hint">上傳「電子發票平台」下載的銷項發票明細（xlsx）。系統會自動依 <strong>買方統編</strong> 區分電子二聯／電子三聯，並依 <strong>課稅別</strong> 拆出應稅、零稅率、免稅銷售額；只有二聯的應稅部分會以 5% 稅率還原銷售額與稅額，免稅與零稅率不反推。可另外上傳平台的銷項折讓明細，彙總為「減：退回及折讓」列。</p>
+        <p class="hint">上傳「電子發票平台」下載的銷項發票明細（xlsx）。系統會自動依 <strong>買方統編</strong> 區分電子二聯／電子三聯，並依 <strong>課稅別</strong> 拆出應稅、零稅率、免稅銷售額；只有二聯的應稅部分會以 5% 稅率還原銷售額與稅額，免稅與零稅率不反推。可另外上傳平台的銷項折讓明細（或銷進項折讓合併檔），逐品項區分應稅／零稅率／免稅後彙總為「減：退回及折讓」列。</p>
         <div class="upload-row">
           <div class="upload-field">
             <label class="upload-label">
@@ -67,7 +67,7 @@
     <section id="tab-input" class="tab-panel">
       <div class="card no-print">
         <h2>進項清洗</h2>
-        <p class="hint">需要兩個檔案：① 文中系統「進項憑證明細表」（xls/xlsx）作為主資料；② 電子發票平台下載的進項發票明細（xlsx）作為品名來源。系統會以發票號碼比對品名，並依扣抵欄區分可扣抵／不可扣抵。③ 平台進項折讓明細可選填，會依原發票的扣抵別列出「進項之退出及折讓」。</p>
+        <p class="hint">需要兩個檔案：① 文中系統「進項憑證明細表」（xls/xlsx）作為主資料；② 電子發票平台下載的進項發票明細（xlsx）作為品名來源。系統會以發票號碼比對品名，並依扣抵欄區分可扣抵／不可扣抵。③ 平台進項折讓明細可選填（也可上傳銷進項折讓合併檔），會依原發票的扣抵別列出「進項之退出及折讓」。</p>
         <div class="upload-row">
           <div class="upload-field">
             <label class="upload-label">

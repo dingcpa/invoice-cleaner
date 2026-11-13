@@ -121,7 +121,7 @@
    * 金額一律取表頭 amount／tax（品項金額帶小數，加總會有 1 元差）。
    *
    * 每列支援欄位：allowanceNo, status, invoiceNo（原發票號碼）, itemName,
-   *   itemAmount, itemTax（品項金額／稅額，僅混合課稅別拆分時使用）,
+   *   itemAmount, itemTax（品項金額／稅額，銷項折讓逐品項判斷課稅別用）,
    *   amount, tax（必填，折讓單表頭 折讓金額(不含稅)／折讓稅額）, allowanceDate
    */
   function groupAllowances(items, skipNonConfirmed) {
@@ -144,6 +144,7 @@
         invoiceNo: toCleanString(it.invoiceNo),
         itemName: toCleanString(it.itemName),
         amount: toNumber(it.itemAmount),
+        tax: isPresent(it.itemTax) ? toNumber(it.itemTax) : null,
       });
     });
     return {
@@ -162,40 +163,69 @@
   }
 
   /**
-   * 銷項折讓彙總：依原發票課稅別拆 應稅／零稅率／免稅。
-   * 原發票查不到課稅別時（多為前期發票）：有稅額 → 應稅；稅額為 0 → 暫列免稅並列入 unverified。
-   * 同一張折讓單混有不同課稅別時，零稅率／免稅取品項金額（四捨五入），其餘歸應稅。
+   * 判斷單一折讓品項的課稅別。回傳：
+   *   { cat: 'taxable'|'zero'|'exempt', guessed } 或 { cat: 'follow' }（跟著同張其他品項）
+   *   或 null（品項沒有稅額資料，交給整張折讓單判斷）
+   *
+   * 優先序：
+   *   1. 原發票在本期銷項中且課稅別明確（應稅／零稅率／免稅）→ 依原發票
+   *   2. 品項稅額 ≠ 0 → 應稅
+   *   3. 品項稅額 = 0 且金額 < 10（含負數折扣列）→ 5% 稅額本來就會四捨五入成 0，無法判斷 → follow
+   *   4. 品項稅額 = 0 且金額 ≥ 10 → 不可能是 5% 應稅，暫列免稅（也可能是零稅率）→ guessed
+   */
+  function classifyAllowanceItem(it, taxTypeOf) {
+    const c = categoryOfTaxType(taxTypeOf.get(it.invoiceNo));
+    if (c) return { cat: c, guessed: false };
+    if (it.tax === null) return null;
+    if (it.tax !== 0) return { cat: 'taxable', guessed: false };
+    if (it.amount < 10) return { cat: 'follow' };
+    return { cat: 'exempt', guessed: true };
+  }
+
+  /**
+   * 銷項折讓彙總：逐品項判斷課稅別，拆 應稅／零稅率／免稅。
+   * 平台折讓檔的金額一律為未稅、稅額另列（B2C 折讓亦同，與 B2C 發票含稅不同），故不做 5% 反推。
+   *
+   * 每張折讓單：
+   *   - 品項課稅別見 classifyAllowanceItem
+   *   - 品項沒有稅額資料又查無原發票 → 整張判斷：表頭有稅額 → 應稅；稅額為 0 → 暫列免稅
+   *   - follow 品項：同張有應稅品項 → 應稅；否則跟其他品項；全部都是 follow → 應稅
+   *   - 金額以表頭為準：零稅率／免稅取品項金額四捨五入，剩餘歸應稅（無應稅時歸最後一類）
+   *   - 暫列免稅者列入 unverified
+   *   - 核對：|應稅金額 × 5% − 表頭稅額| 超過容許誤差（0.5 × 品項數 + 1）→ 列入 mismatched
    */
   function summarizeOutputAllowances(docs, taxTypeOf) {
     const row = { label: '減：退回及折讓', sales: 0, tax: 0, zero: 0, exempt: 0, total: 0, count: 0 };
     const unverified = [];
+    const mismatched = [];
     for (const doc of docs) {
-      const fallback = doc.tax !== 0 ? 'taxable' : 'exempt';
-      let guessed = false;
-      const cats = doc.items.map(it => {
-        const c = categoryOfTaxType(taxTypeOf.get(it.invoiceNo));
-        if (c) return c;
-        guessed = true;
-        return fallback;
-      });
-      if (guessed && fallback === 'exempt') unverified.push(doc.allowanceNo);
+      const fallback = { cat: doc.tax !== 0 ? 'taxable' : 'exempt', guessed: doc.tax === 0 };
+      const cls = doc.items.map(it => classifyAllowanceItem(it, taxTypeOf) || fallback);
+      const decided = cls.map(x => x.cat).filter(c => c !== 'follow');
+      const followAs = decided.includes('taxable') ? 'taxable' : (decided[0] || 'taxable');
+      const cats = cls.map(x => (x.cat === 'follow' ? followAs : x.cat));
+      if (cls.some((x, i) => x.guessed && cats[i] !== 'taxable')) unverified.push(doc.allowanceNo);
 
       const part = { taxable: 0, zero: 0, exempt: 0 };
-      if (cats.every(c => c === cats[0])) {
-        part[cats[0]] = doc.amount;
-      } else {
-        doc.items.forEach((it, i) => { part[cats[i]] += it.amount; });
-        part.zero = Math.round(part.zero);
-        part.exempt = Math.round(part.exempt);
+      doc.items.forEach((it, i) => { part[cats[i]] += it.amount; });
+      const order = ['zero', 'exempt', 'taxable'].filter(c => cats.includes(c));
+      const last = order.pop() || 'taxable';
+      let rest = doc.amount;
+      for (const c of order) { part[c] = Math.round(part[c]); rest -= part[c]; }
+      part[last] = rest;
+
+      if (Math.abs(part.taxable * 0.05 - doc.tax) > 0.5 * doc.items.length + 1) {
+        mismatched.push({ allowanceNo: doc.allowanceNo, sales: part.taxable, tax: doc.tax });
       }
+
+      row.sales += part.taxable;
       row.zero += part.zero;
       row.exempt += part.exempt;
-      row.sales += doc.amount - part.zero - part.exempt;
       row.tax += doc.tax;
       row.total += doc.amount + doc.tax;
       row.count++;
     }
-    return { row, unverified };
+    return { row, unverified, mismatched };
   }
 
   /**
@@ -263,7 +293,8 @@
    *   allowance: null | {
    *     row: {label, count, sales, tax, zero, exempt, total},  // count = 折讓單張數
    *     skipped: Array<{allowanceNo, status}>,
-   *     unverified: Array<string>   // 稅額為 0、查無原發票課稅別、暫列免稅的折讓單號
+   *     unverified: Array<string>,  // 含稅額為 0、查無原發票課稅別、暫列免稅品項的折讓單號
+   *     mismatched: Array<{allowanceNo, sales, tax}>  // 應稅金額 × 5% 與表頭稅額不符，需人工核對
    *   },
    *   period: string,
    *   company: {taxId, name},
@@ -367,7 +398,7 @@
     if (opts.allowances) {
       const g = groupAllowances(opts.allowances, skipNonConfirmed);
       const s = summarizeOutputAllowances(g.docs, taxTypeOf);
-      allowance = { row: s.row, skipped: g.skipped, unverified: s.unverified };
+      allowance = { row: s.row, skipped: g.skipped, unverified: s.unverified, mismatched: s.mismatched };
     }
 
     return {
@@ -538,7 +569,7 @@
     dateToMingguoYM,
     inferPeriod,
     fmtMingguoDate,
-    version: '1.2.0',
+    version: '1.3.0',
   };
 
   if (typeof module !== 'undefined' && module.exports) {

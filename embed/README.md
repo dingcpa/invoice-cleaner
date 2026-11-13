@@ -79,7 +79,8 @@ const { cleanOutputData, cleanInputData } = require('./invoice-cleaner-core');
   allowance: {                             // 未傳 opts.allowances 時為 null
     row: { label: '減：退回及折讓', count, sales, tax, zero, exempt, total },  // count = 折讓單張數
     skipped: [{ allowanceNo, status }],    // 被略過的作廢折讓單
-    unverified: ['折讓單號', ...],          // 稅額為 0、查無原發票課稅別、暫列免稅者
+    unverified: ['折讓單號', ...],          // 含稅額為 0、查無原發票課稅別、暫列免稅品項者
+    mismatched: [{ allowanceNo, sales, tax }],  // 應稅金額 × 5% 與表頭稅額不符，需人工核對
   },
   period:  '115年3-4月',                  // 自動從 invoiceDate 推算
   company: { taxId: '...', name: '...' },
@@ -105,10 +106,16 @@ const { cleanOutputData, cleanInputData } = require('./invoice-cleaner-core');
   - 銷售額 = `round(應稅總計合計 / 1.05)`
   - 稅額 = `應稅總計合計 − 銷售額`（保證銷售+稅必等於應稅總計）
   - 零稅率與免稅**不反推**，原額列入
-- 銷項折讓：依原發票號碼回查 `invoices` 中的課稅別，拆應稅／零稅率／免稅
-  - 原發票查不到（多為前期發票）：有稅額 → 應稅；稅額為 0 → 暫列免稅並列入 `unverified`
-  - 原發票為應稅但折讓稅額為 0（小額四捨五入）→ 仍列應稅
-  - 同一張折讓單混有不同課稅別：零稅率／免稅取品項金額四捨五入，其餘歸應稅
+- 銷項折讓：**逐品項**判斷課稅別，拆應稅／零稅率／免稅（一張折讓單可能同時有應稅與免稅品項）
+  - 平台折讓檔的金額一律是**未稅**、稅額另列，B2C 折讓也一樣（與 B2C 發票含稅不同），所以折讓**不做 5% 反推**
+  - 每個品項依序判斷：
+    1. 原發票在 `invoices` 中且課稅別明確 → 依原發票（應稅品項即使小額稅額四捨五入為 0，仍列應稅）
+    2. 品項稅額（`itemTax`）≠ 0 → 應稅
+    3. 品項稅額 = 0 且品項金額 < 10（含負數折扣列）→ 5% 本來就會四捨五入成 0，跟著同張其他品項（有應稅品項就歸應稅）
+    4. 品項稅額 = 0 且品項金額 ≥ 10 → 不可能是 5% 應稅，暫列免稅並列入 `unverified`（也可能是零稅率）
+    5. 沒傳 `itemTax` 又查無原發票 → 整張判斷：表頭有稅額 → 應稅；稅額為 0 → 暫列免稅並列入 `unverified`
+  - 金額以表頭為準：零稅率／免稅取品項金額四捨五入，剩餘歸應稅
+  - 核對：`|應稅金額 × 5% − 表頭稅額| > 0.5 × 品項數 + 1` 的折讓單列入 `mismatched`
 
 ---
 
@@ -174,7 +181,8 @@ const { cleanOutputData, cleanInputData } = require('./invoice-cleaner-core');
 | `status` | 折讓單狀態 | 預設略過非「折讓已確認」 |
 | `invoiceNo` | 發票號碼 | 被折讓的原發票號碼（用來回查課稅別／扣抵別） |
 | `itemName` | 品項名稱 | 進項折讓顯示用 |
-| `itemAmount` | 品項折讓金額(不含稅) | 只在同一張折讓單混有不同課稅別時用來拆分 |
+| `itemAmount` | 品項折讓金額(不含稅) | 銷項折讓：同一張混有不同課稅別時用來拆分 |
+| `itemTax` | 品項折讓稅額 | 銷項折讓：逐品項判斷應稅／免稅（建議提供，前期發票的折讓全靠它判斷） |
 | `amount` | 折讓金額(不含稅) | **必填**，表頭金額 |
 | `tax` | 折讓稅額 | **必填**，表頭稅額 |
 | `allowanceDate` | 折讓單日期 | 進項折讓顯示用 |
